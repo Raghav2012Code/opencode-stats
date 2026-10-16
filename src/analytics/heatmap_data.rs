@@ -32,7 +32,7 @@ pub fn build_heatmap_data(events: &[UsageEvent], today: NaiveDate) -> HeatmapDat
         *total = total.saturating_add(event.tokens.total());
     }
 
-    let max = totals.values().copied().max().unwrap_or_default();
+    let thresholds = intensity_thresholds(totals.values().copied().filter(|total| *total > 0));
     let mut date = grid_start;
     let mut weeks = Vec::new();
     let mut month_labels = Vec::new();
@@ -41,7 +41,7 @@ pub fn build_heatmap_data(events: &[UsageEvent], today: NaiveDate) -> HeatmapDat
         let mut week = Vec::new();
         for _ in 0..7 {
             let tokens = totals.get(&date).copied().unwrap_or_default();
-            let intensity = map_intensity(tokens, max);
+            let intensity = map_intensity(tokens, &thresholds);
             week.push(HeatmapCell {
                 intensity,
                 is_future: date > end,
@@ -68,20 +68,42 @@ pub fn build_heatmap_data(events: &[UsageEvent], today: NaiveDate) -> HeatmapDat
     }
 }
 
-fn map_intensity(tokens: u64, max: u64) -> u8 {
-    if tokens == 0 || max == 0 {
-        0
+/// The quartiles of the window's active days, by nearest rank. Deriving the bucket edges
+/// from the distribution, rather than from the busiest day, stops one outlier from pushing
+/// every other day into the lowest bucket.
+fn intensity_thresholds(active: impl Iterator<Item = u64>) -> [u64; 3] {
+    let mut values = active.collect::<Vec<_>>();
+    values.sort_unstable();
+
+    if values.is_empty() {
+        return [0, 0, 0];
+    }
+
+    let at = |numerator: usize, denominator: usize| {
+        let rank = (values.len() * numerator).div_ceil(denominator).max(1);
+        values[rank - 1]
+    };
+
+    [at(1, 4), at(1, 2), at(3, 4)]
+}
+
+/// Level 0 is a day with no usage at all, which is absence rather than low activity, so it
+/// takes no part in the distribution. A token count equal to a threshold takes the lower
+/// bucket, so two days with the same total never get different shades.
+fn map_intensity(tokens: u64, thresholds: &[u64; 3]) -> u8 {
+    if tokens == 0 {
+        return 0;
+    }
+
+    let [first, second, third] = *thresholds;
+    if tokens <= first {
+        1
+    } else if tokens <= second {
+        2
+    } else if tokens <= third {
+        3
     } else {
-        let ratio = tokens as f64 / max as f64;
-        if ratio < 0.25 {
-            1
-        } else if ratio < 0.5 {
-            2
-        } else if ratio < 0.75 {
-            3
-        } else {
-            4
-        }
+        4
     }
 }
 
@@ -99,14 +121,74 @@ pub fn weekday_labels() -> [Weekday; 7] {
 
 #[cfg(test)]
 mod tests {
-    use super::map_intensity;
+    use super::{intensity_thresholds, map_intensity};
+
+    fn thresholds(values: &[u64]) -> [u64; 3] {
+        intensity_thresholds(values.iter().copied())
+    }
+
+    fn levels(values: &[u64]) -> [usize; 5] {
+        let edges = thresholds(values);
+        let mut counts = [0usize; 5];
+        for tokens in values {
+            counts[map_intensity(*tokens, &edges) as usize] += 1;
+        }
+        counts
+    }
 
     #[test]
-    fn maps_heat_levels() {
-        assert_eq!(map_intensity(0, 100), 0);
-        assert_eq!(map_intensity(10, 100), 1);
-        assert_eq!(map_intensity(30, 100), 2);
-        assert_eq!(map_intensity(60, 100), 3);
-        assert_eq!(map_intensity(90, 100), 4);
+    fn thresholds_are_the_nearest_rank_quartiles() {
+        let series = (1..=100u64).collect::<Vec<_>>();
+        assert_eq!(thresholds(&series), [25, 50, 75]);
+    }
+
+    #[test]
+    fn maps_levels_from_the_thresholds() {
+        let edges = [10, 30, 60];
+
+        assert_eq!(map_intensity(0, &edges), 0);
+        assert_eq!(map_intensity(5, &edges), 1);
+        assert_eq!(map_intensity(10, &edges), 1);
+        assert_eq!(map_intensity(11, &edges), 2);
+        assert_eq!(map_intensity(30, &edges), 2);
+        assert_eq!(map_intensity(60, &edges), 3);
+        assert_eq!(map_intensity(61, &edges), 4);
+    }
+
+    #[test]
+    fn tied_days_share_a_bucket() {
+        assert_eq!(thresholds(&[7, 7, 7, 7]), [7, 7, 7]);
+        assert_eq!(map_intensity(7, &[7, 7, 7]), 1);
+    }
+
+    #[test]
+    fn sparse_windows_are_handled() {
+        assert_eq!(thresholds(&[]), [0, 0, 0]);
+        assert_eq!(thresholds(&[5]), [5, 5, 5]);
+        assert_eq!(thresholds(&[5, 9]), [5, 5, 9]);
+
+        assert_eq!(map_intensity(5, &[5, 5, 5]), 1);
+        assert_eq!(map_intensity(9, &[5, 5, 9]), 3);
+    }
+
+    #[test]
+    fn one_outlier_day_does_not_flatten_the_map() {
+        // The shape that collapsed the old even-interval buckets: one enormous day and a
+        // long tail below a quarter of it.
+        let mut series = (1..=50u64).map(|day| day * 1_000_000).collect::<Vec<_>>();
+        series.push(1_000_000_000);
+
+        let counts = levels(&series);
+
+        for level in 1..=4 {
+            assert!(
+                counts[level] > 0,
+                "every level must be used, got {counts:?}"
+            );
+        }
+        assert!(
+            counts[1] <= series.len() / 4 + 1,
+            "the lowest level must not hold most active days, got {counts:?}"
+        );
     }
 }
