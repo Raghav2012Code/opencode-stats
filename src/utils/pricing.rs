@@ -36,12 +36,6 @@ impl PriceSummary {
     pub fn add_missing(&mut self) {
         self.missing = true;
     }
-
-    pub fn merge(&mut self, other: &Self) {
-        self.known += other.known;
-        self.has_known |= other.has_known;
-        self.missing |= other.missing;
-    }
 }
 
 pub fn update_price_summary(

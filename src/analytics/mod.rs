@@ -1,20 +1,14 @@
-pub mod daily;
 pub mod heatmap_data;
 pub mod model_stats;
-pub mod monthly;
-pub mod weekly;
 
 use std::collections::BTreeSet;
 
 use chrono::NaiveDate;
 
-use crate::analytics::daily::aggregate_daily;
 use crate::analytics::heatmap_data::{HeatmapData, build_heatmap_data};
 use crate::analytics::model_stats::{
     ModelChartData, ModelUsageRow, ProviderUsageRow, build_model_chart, build_provider_chart,
 };
-use crate::analytics::monthly::aggregate_monthly;
-use crate::analytics::weekly::aggregate_weekly;
 use crate::cache::models_cache::PricingCatalog;
 use crate::db::models::{AppData, MessageRecord, UsageEvent};
 use crate::utils::pricing::{PriceSummary, ZeroCostBehavior, update_price_summary};
@@ -59,9 +53,6 @@ pub fn build_snapshot(
         .copied()
         .filter(|message| message.model_id.is_some())
         .collect::<Vec<_>>();
-    let daily = aggregate_daily(&filtered_events, pricing, today, zero_cost_behavior);
-    let weekly = aggregate_weekly(&daily, 0);
-    let _monthly = aggregate_monthly(&weekly);
     let (models, chart) = build_model_chart(
         &filtered_events,
         &filtered_model_messages,
@@ -117,7 +108,11 @@ pub fn build_snapshot(
         .map(|event| event.model_id.clone())
         .collect::<BTreeSet<_>>()
         .len();
-    let active_days = daily.len();
+    let active_days = filtered_events
+        .iter()
+        .filter_map(|event| event.activity_date())
+        .collect::<BTreeSet<_>>()
+        .len();
 
     AnalyticsSnapshot {
         overview: OverviewStats {

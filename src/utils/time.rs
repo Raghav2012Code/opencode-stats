@@ -1,4 +1,4 @@
-use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, TimeZone};
+use chrono::{DateTime, Duration, Local, NaiveDate, TimeZone};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum TimeRange {
@@ -51,16 +51,6 @@ pub fn current_local_date() -> NaiveDate {
     Local::now().date_naive()
 }
 
-pub fn custom_week_start(date: NaiveDate, week_start_day: u32) -> NaiveDate {
-    let current_weekday = date.weekday().num_days_from_monday();
-    let days_back = (7 + current_weekday as i64 - week_start_day as i64) % 7;
-    date - Duration::days(days_back)
-}
-
-pub fn month_start(date: NaiveDate) -> NaiveDate {
-    date.with_day(1).unwrap_or(date)
-}
-
 pub fn in_range(date: NaiveDate, range: TimeRange, today: NaiveDate) -> bool {
     match range.start_date(today) {
         Some(start) => date >= start && date <= today,
@@ -70,20 +60,12 @@ pub fn in_range(date: NaiveDate, range: TimeRange, today: NaiveDate) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{TimeRange, custom_week_start};
-    use chrono::NaiveDate;
+    use super::TimeRange;
 
     #[test]
     fn cycles_ranges() {
         assert_eq!(TimeRange::All.cycle(), TimeRange::Last7Days);
         assert_eq!(TimeRange::Last7Days.cycle(), TimeRange::Last30Days);
         assert_eq!(TimeRange::Last30Days.cycle(), TimeRange::All);
-    }
-
-    #[test]
-    fn computes_custom_week_start() {
-        let date = NaiveDate::from_ymd_opt(2026, 3, 10).unwrap();
-        let sunday_start = custom_week_start(date, 6);
-        assert_eq!(sunday_start, NaiveDate::from_ymd_opt(2026, 3, 8).unwrap());
     }
 }
