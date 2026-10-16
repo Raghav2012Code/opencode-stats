@@ -46,6 +46,26 @@ impl TimeRange {
             Self::Last7Days => Some(today - Duration::days(6)),
         }
     }
+
+    /// Machine name used by `stats --range`: one of `all|today|7d|30d`.
+    pub fn cli_name(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Today => "today",
+            Self::Last7Days => "7d",
+            Self::Last30Days => "30d",
+        }
+    }
+
+    pub fn from_cli_name(value: &str) -> Option<Self> {
+        match value {
+            "all" => Some(Self::All),
+            "today" => Some(Self::Today),
+            "7d" => Some(Self::Last7Days),
+            "30d" => Some(Self::Last30Days),
+            _ => None,
+        }
+    }
 }
 
 pub fn timestamp_ms_to_local(timestamp_ms: i64) -> Option<DateTime<Local>> {
@@ -95,5 +115,18 @@ mod tests {
         assert_eq!(TimeRange::from_shortcut('3'), Some(TimeRange::Last7Days));
         assert_eq!(TimeRange::from_shortcut('4'), Some(TimeRange::Last30Days));
         assert_eq!(TimeRange::from_shortcut('5'), None);
+    }
+
+    #[test]
+    fn cli_names_round_trip() {
+        for range in [
+            TimeRange::All,
+            TimeRange::Today,
+            TimeRange::Last7Days,
+            TimeRange::Last30Days,
+        ] {
+            assert_eq!(TimeRange::from_cli_name(range.cli_name()), Some(range));
+        }
+        assert_eq!(TimeRange::from_cli_name("week"), None);
     }
 }

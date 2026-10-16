@@ -2,6 +2,7 @@ mod analytics;
 mod cache;
 mod config;
 mod db;
+mod stats_output;
 mod ui;
 mod utils;
 
@@ -11,14 +12,17 @@ use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 use color_eyre::eyre::{Context, ContextCompat, Result, bail};
 
+use crate::analytics::build_snapshot;
 use crate::cache::models_cache::{PricingCatalog, default_cache_path, refresh_pricing_catalog};
 use crate::config::app_config::AppConfig;
 use crate::config::theme_config::ThemeCatalog;
 use crate::db::models::InputOptions;
 use crate::db::queries::load_app_data;
+use crate::stats_output::{StatsFormat, format_stats_line};
 use crate::ui::app::{App, print_exit_art};
 use crate::ui::theme::{Theme, ThemeKind, ThemeMode};
 use crate::utils::pricing::ZeroCostBehavior;
+use crate::utils::time::TimeRange;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -26,7 +30,7 @@ async fn main() -> Result<()> {
 
     let cli = CliArgs::parse();
     if let Some(command) = cli.command {
-        return run_command(command).await;
+        return run_command(command, cli.database_path, cli.json_path, cli.ignore_zero).await;
     }
 
     let data = load_app_data(&InputOptions {
@@ -54,6 +58,7 @@ struct CliArgs {
     #[arg(
         long = "db",
         value_name = "PATH",
+        global = true,
         help = "Path to OpenCode SQLite database file"
     )]
     database_path: Option<PathBuf>,
@@ -70,6 +75,7 @@ struct CliArgs {
 
     #[arg(
         long = "ignore-zero",
+        global = true,
         help = "Treat zero stored costs as missing and estimate them"
     )]
     ignore_zero: bool,
@@ -86,6 +92,33 @@ enum Command {
         #[arg(value_enum)]
         shell: Shell,
     },
+    #[command(
+        about = "Print usage statistics for a range as one line",
+        long_about = "Print usage statistics for a range as a single machine-readable line \
+            with no colour or terminal codes, so the output stays pipeable.\n\n\
+            Shape: range=<name> tokens=<n> input=<n> output=<n> cache=<n> \
+            cost=<usd> sessions=<n> messages=<n> prompts=<n> models=<n> active_days=<n>\n\n\
+            <name> is one of all|today|7d|30d. Token counts and cost are the \
+            exact numbers the overview reports; cost is the known USD total \
+            as a plain decimal (0 when nothing is priced) and models is the \
+            number of distinct models used."
+    )]
+    Stats {
+        #[arg(
+            long = "range",
+            default_value = "all",
+            value_parser = parse_stats_range,
+            help = "Time range to report: all|today|7d|30d"
+        )]
+        range: TimeRange,
+        #[arg(long = "format", value_enum, default_value_t = StatsFormat::Line)]
+        format: StatsFormat,
+    },
+}
+
+fn parse_stats_range(value: &str) -> std::result::Result<TimeRange, String> {
+    TimeRange::from_cli_name(value)
+        .ok_or_else(|| format!("invalid range '{value}': expected one of all|today|7d|30d"))
 }
 
 #[derive(Debug, Subcommand)]
@@ -99,8 +132,31 @@ enum CacheCommand {
     Clean,
 }
 
-async fn run_command(command: Command) -> Result<()> {
+async fn run_command(
+    command: Command,
+    database_path: Option<PathBuf>,
+    json_path: Option<PathBuf>,
+    ignore_zero: bool,
+) -> Result<()> {
     match command {
+        Command::Stats { range, format } => {
+            let data = load_app_data(&InputOptions {
+                database_path,
+                json_path,
+            })
+            .wrap_err("failed to load OpenCode usage data")?;
+            let pricing = PricingCatalog::load().wrap_err("failed to load pricing catalog")?;
+            let snapshot = build_snapshot(
+                &data,
+                &pricing,
+                range,
+                ZeroCostBehavior::from_ignore_zero(ignore_zero),
+            );
+            match format {
+                StatsFormat::Line => println!("{}", format_stats_line(&snapshot, range)),
+            }
+            Ok(())
+        }
         Command::Cache { action } => match action {
             CacheCommand::Path => {
                 println!("{}", default_cache_path()?.display());
