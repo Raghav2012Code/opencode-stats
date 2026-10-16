@@ -12,6 +12,7 @@ use ratatui::widgets::{Block, Padding};
 use ratatui::{DefaultTerminal, Frame, Terminal, TerminalOptions, Viewport, backend::TestBackend};
 use tokio::sync::mpsc;
 
+use crate::analytics::model_stats::UsageRow;
 use crate::analytics::{AnalyticsSnapshot, build_snapshot};
 use crate::cache::models_cache::{PricingCatalog, refresh_remote_models};
 use crate::db::models::AppData;
@@ -40,11 +41,6 @@ struct ClipboardJob {
     buffer: ratatui::buffer::Buffer,
     theme: Theme,
     summary: String,
-}
-
-#[derive(Debug)]
-struct ClipboardUpdate {
-    message: String,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -87,8 +83,8 @@ pub struct App {
     pub focused_provider_index: usize,
     pub search: Option<SearchState>,
     pricing_updates: mpsc::UnboundedReceiver<Result<PricingCatalog>>,
-    clipboard_sender: mpsc::UnboundedSender<ClipboardUpdate>,
-    clipboard_updates: mpsc::UnboundedReceiver<ClipboardUpdate>,
+    clipboard_sender: mpsc::UnboundedSender<String>,
+    clipboard_updates: mpsc::UnboundedReceiver<String>,
     copy_in_progress: bool,
 }
 
@@ -202,7 +198,7 @@ impl App {
                 }
                 Some(update) = self.clipboard_updates.recv() => {
                     self.copy_in_progress = false;
-                    self.set_status(update.message);
+                    self.set_status(update);
                 }
                 _ = tick.tick() => {}
             }
@@ -504,7 +500,7 @@ impl App {
                 Ok(message) => message,
                 Err(err) => format!("Copy failed: {err}"),
             };
-            let _ = sender.send(ClipboardUpdate { message });
+            let _ = sender.send(message);
         });
     }
 
@@ -527,34 +523,23 @@ impl App {
                 self.snapshot.overview.messages,
                 self.snapshot.overview.prompts,
             ),
-            Page::Models => self
-                .snapshot
-                .models
-                .iter()
-                .take(8)
-                .map(|row| {
-                    format!(
-                        "{}: {} tokens ({:.2}%)",
-                        row.id, row.total_tokens, row.percentage
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n"),
-            Page::Providers => self
-                .snapshot
-                .providers
-                .iter()
-                .take(8)
-                .map(|row| {
-                    format!(
-                        "{}: {} tokens ({:.2}%)",
-                        row.id, row.total_tokens, row.percentage
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n"),
+            Page::Models => summary_lines(&self.snapshot.models),
+            Page::Providers => summary_lines(&self.snapshot.providers),
         }
     }
+}
+
+fn summary_lines(rows: &[UsageRow]) -> String {
+    rows.iter()
+        .take(8)
+        .map(|row| {
+            format!(
+                "{}: {} tokens ({:.2}%)",
+                row.id, row.total_tokens, row.percentage
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn copy_clipboard_job(job: ClipboardJob) -> Result<String> {
