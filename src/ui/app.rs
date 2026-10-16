@@ -271,6 +271,7 @@ impl App {
             segment_span("Providers", self.page == Page::Providers, theme),
             ratatui::text::Span::raw("    "),
             segment_span(" All ", self.range == TimeRange::All, theme),
+            segment_span("Today", self.range == TimeRange::Today, theme),
             segment_span("7 Days", self.range == TimeRange::Last7Days, theme),
             segment_span("30 Days", self.range == TimeRange::Last30Days, theme),
             ratatui::text::Span::raw("    "),
@@ -285,7 +286,7 @@ impl App {
             .status_message
             .as_ref()
             .map(|status| status.text.as_str())
-            .unwrap_or("<tab> ←/→ h/l pages | r cycle | 1/2/3 pick | <ctrl-s> share | q exit");
+            .unwrap_or("<tab> ←/→ h/l pages | r cycle | 1/2/3/4 pick | <ctrl-s> share | q exit");
         frame.render_widget(
             ratatui::widgets::Paragraph::new(status).style(theme.muted_style()),
             area,

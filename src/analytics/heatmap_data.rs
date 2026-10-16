@@ -327,6 +327,19 @@ mod tests {
     }
 
     #[test]
+    fn today_covers_a_single_day() {
+        let events = [event_days_ago(0, 1_000), event_days_ago(1, 5_000_000_000)];
+        let borrowed = events.iter().collect::<Vec<_>>();
+
+        let data = build_heatmap_data(&borrowed, TimeRange::Today, today());
+        let counts = level_counts(&data);
+
+        assert_eq!(data.weeks.len(), 1, "one day plus padding is a single week");
+        assert_eq!(counts.iter().sum::<usize>(), 7);
+        assert_eq!(counts[0], 6, "only today has usage, got {counts:?}");
+    }
+
+    #[test]
     fn an_empty_range_renders_as_empty() {
         let data = build_heatmap_data(&[], TimeRange::Last7Days, today());
 
