@@ -277,7 +277,6 @@ mod tests {
                 updated_at,
             }],
             import_stats: ImportStats::default(),
-            sessions: Vec::new(),
             source: DataSourceKind::Sqlite,
         };
         let json_like = AppData {
@@ -285,7 +284,6 @@ mod tests {
             messages,
             session_records: Vec::new(),
             import_stats: ImportStats::default(),
-            sessions: Vec::new(),
             source: DataSourceKind::Json,
         };
         let pricing = PricingCatalog {
@@ -354,7 +352,6 @@ mod tests {
                 updated_at,
             }],
             import_stats: ImportStats::default(),
-            sessions: Vec::new(),
             source: DataSourceKind::Sqlite,
         };
         let pricing = PricingCatalog {
@@ -413,7 +410,6 @@ mod tests {
             messages: Vec::new(),
             session_records: Vec::new(),
             import_stats: ImportStats::default(),
-            sessions: Vec::new(),
             source: DataSourceKind::Json,
         };
         let pricing = PricingCatalog {
@@ -482,7 +478,6 @@ mod tests {
             messages: Vec::new(),
             session_records: Vec::new(),
             import_stats: ImportStats::default(),
-            sessions: Vec::new(),
             source: DataSourceKind::Json,
         };
         let pricing = PricingCatalog {

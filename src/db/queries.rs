@@ -8,7 +8,7 @@ use crate::db::connection::{self, discover_database_path, open_database};
 use crate::db::errors::{Error, Result};
 use crate::db::models::{
     AppData, DataSourceKind, ImportStats, InputOptions, JsonMessageRecord, MessageRecord,
-    SessionRecord, SessionSummary, TokenUsage, UsageEvent,
+    SessionRecord, TokenUsage, UsageEvent,
 };
 use crate::utils::time::timestamp_ms_to_local;
 
@@ -455,40 +455,19 @@ fn normalize_optional_text(value: Option<String>) -> Option<String> {
 }
 
 fn finalize_app_data(
-    events: Vec<UsageEvent>,
+    mut events: Vec<UsageEvent>,
     messages: Vec<MessageRecord>,
     session_records: Vec<SessionRecord>,
     import_stats: ImportStats,
     source: DataSourceKind,
 ) -> Result<AppData> {
-    let mut grouped: BTreeMap<String, Vec<UsageEvent>> = BTreeMap::new();
-    for event in events {
-        grouped
-            .entry(event.session_id.clone())
-            .or_default()
-            .push(event);
-    }
-
-    let mut sessions = Vec::new();
-    let mut flattened = Vec::new();
-    for (session_id, mut events) in grouped {
-        events.sort_by_key(|event| event.created_at);
-        if let Some(summary) = SessionSummary::from_events(session_id, &events) {
-            flattened.extend(events);
-            sessions.push(summary);
-        }
-    }
-
-    sessions.sort_by_key(|session| session.start_time());
-    sessions.reverse();
-    flattened.sort_by_key(|event| event.created_at);
+    events.sort_by_key(|event| event.created_at);
 
     Ok(AppData {
-        events: flattened,
+        events,
         messages,
         session_records,
         import_stats,
-        sessions,
         source,
     })
 }
@@ -696,7 +675,7 @@ mod tests {
             .sum();
 
         assert_eq!(data.events.len(), 5);
-        assert_eq!(data.sessions.len(), 3);
+        assert_eq!(data.session_records.len(), 3);
         assert_eq!(total_cost, rust_decimal::Decimal::new(205, 2));
         assert_eq!(data.messages.len(), 6);
         let modern = data

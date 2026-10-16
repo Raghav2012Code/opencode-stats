@@ -1,5 +1,4 @@
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use chrono::{DateTime, Local, NaiveDate};
 use rust_decimal::Decimal;
@@ -85,15 +84,6 @@ impl UsageEvent {
             && self.finish_reason.as_deref() != Some("tool-calls")
             && self.duration_ms().is_some()
     }
-
-    pub fn project_basename(&self) -> Option<String> {
-        self.project_path
-            .as_deref()
-            .and_then(Path::file_name)
-            .and_then(|name| name.to_str())
-            .map(ToOwned::to_owned)
-            .or_else(|| self.project_name.clone())
-    }
 }
 
 impl MessageRecord {
@@ -110,62 +100,10 @@ pub enum DataSourceKind {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SessionSummary {
-    pub session_id: String,
-    pub parent_session_id: Option<String>,
-    pub title: String,
-    pub project_name: String,
-    pub project_path: Option<PathBuf>,
-    pub start_time: Option<DateTime<Local>>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SessionRecord {
     pub session_id: String,
     pub created_at: DateTime<Local>,
     pub updated_at: DateTime<Local>,
-}
-
-impl SessionSummary {
-    pub fn from_events(session_id: String, events: &[UsageEvent]) -> Option<Self> {
-        let first = events.first()?;
-        let title = first
-            .session_title
-            .clone()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| {
-                format!(
-                    "Session {}",
-                    &session_id.chars().take(8).collect::<String>()
-                )
-            });
-
-        let mut project_counts: BTreeMap<String, usize> = BTreeMap::new();
-        for event in events {
-            if let Some(project) = event.project_basename() {
-                *project_counts.entry(project).or_default() += 1;
-            }
-        }
-        let project_name = project_counts
-            .into_iter()
-            .max_by_key(|(_, count)| *count)
-            .map(|(name, _)| name)
-            .or_else(|| first.project_name.clone())
-            .unwrap_or_else(|| "Unknown project".to_string());
-
-        Some(Self {
-            session_id,
-            parent_session_id: first.parent_session_id.clone(),
-            title,
-            project_name,
-            project_path: first.project_path.clone(),
-            start_time: events.iter().filter_map(|event| event.created_at).min(),
-        })
-    }
-
-    pub fn start_time(&self) -> Option<DateTime<Local>> {
-        self.start_time
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -174,7 +112,6 @@ pub struct AppData {
     pub messages: Vec<MessageRecord>,
     pub session_records: Vec<SessionRecord>,
     pub import_stats: ImportStats,
-    pub sessions: Vec<SessionSummary>,
     pub source: DataSourceKind,
 }
 
