@@ -51,15 +51,15 @@ impl Widget for HeatmapWidget<'_> {
 pub fn heatmap_legend_line(theme: &Theme) -> Line<'static> {
     Line::from(vec![
         Span::styled("    Less ", theme.muted_style()),
-        Span::styled("·", Style::default().fg(theme.heat_0)),
+        Span::styled("·", Style::default().fg(theme.heat_level(0))),
         Span::raw(" "),
-        Span::styled("░", Style::default().fg(theme.heat_4)),
+        Span::styled("░", Style::default().fg(theme.heat_level(1))),
         Span::raw(" "),
-        Span::styled("▒", Style::default().fg(theme.heat_4)),
+        Span::styled("▒", Style::default().fg(theme.heat_level(2))),
         Span::raw(" "),
-        Span::styled("▓", Style::default().fg(theme.heat_4)),
+        Span::styled("▓", Style::default().fg(theme.heat_level(3))),
         Span::raw(" "),
-        Span::styled("█", Style::default().fg(theme.heat_4)),
+        Span::styled("█", Style::default().fg(theme.heat_level(4))),
         Span::styled(" More", theme.muted_style()),
     ])
 }
@@ -203,13 +203,18 @@ mod tests {
     fn the_legend_shows_the_same_colours_as_the_cells() {
         for theme in [Theme::builtin_dark(), Theme::builtin_light()] {
             let (grid, legend) = rendered_heat_colours(&theme);
+            let expected = (0..=4)
+                .map(|level| theme.heat_level(level))
+                .collect::<Vec<_>>();
 
-            assert!(!legend.is_empty(), "the legend rendered no swatches");
-            for color in &legend {
-                assert!(
-                    grid.contains(color),
-                    "legend colour {color:?} is not one of the cell colours {grid:?}"
-                );
+            assert_eq!(
+                legend.len(),
+                expected.len(),
+                "the legend must show every level once, got {legend:?}"
+            );
+            for color in &expected {
+                assert!(legend.contains(color), "legend is missing {color:?}");
+                assert!(grid.contains(color), "cells are missing {color:?}");
             }
         }
     }
