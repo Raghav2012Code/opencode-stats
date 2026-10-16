@@ -42,7 +42,7 @@ pub struct Theme {
     pub tab_active_fg: Color,
     pub tab_active_bg: Color,
     pub heat_0: Color,
-    pub heat_3: Color,
+    pub heat_4: Color,
     pub model_series: [Color; 12],
 }
 
@@ -59,7 +59,7 @@ impl Theme {
             tab_active_fg: Color::Black,
             tab_active_bg: Color::Rgb(136, 192, 208),
             heat_0: Color::Rgb(94, 98, 115),
-            heat_3: Color::Rgb(136, 192, 208),
+            heat_4: Color::Rgb(136, 192, 208),
             model_series: [
                 Color::Rgb(191, 97, 106),
                 Color::Rgb(208, 135, 112),
@@ -89,7 +89,7 @@ impl Theme {
             tab_active_fg: Color::White,
             tab_active_bg: Color::Rgb(0, 122, 163),
             heat_0: Color::Rgb(160, 170, 186),
-            heat_3: Color::Rgb(0, 122, 163),
+            heat_4: Color::Rgb(0, 122, 163),
             model_series: [
                 Color::Rgb(167, 40, 40),
                 Color::Rgb(175, 94, 0),
@@ -133,6 +133,36 @@ impl Theme {
     pub fn series_color(&self, index: usize) -> Color {
         self.model_series[index % self.model_series.len()]
     }
+
+    /// The colour of a heatmap intensity level. Level 0 is the empty colour and level 4
+    /// the active one, so levels 1-3 are derived from the theme's two endpoints rather
+    /// than configured.
+    pub fn heat_level(&self, level: u8) -> Color {
+        match level {
+            0 => self.heat_0,
+            level if level >= 4 => self.heat_4,
+            level => lerp_color(self.heat_0, self.heat_4, f32::from(level) / 4.0),
+        }
+    }
+}
+
+fn lerp_color(from: Color, to: Color, t: f32) -> Color {
+    let (Color::Rgb(from_red, from_green, from_blue), Color::Rgb(to_red, to_green, to_blue)) =
+        (from, to)
+    else {
+        return from;
+    };
+
+    Color::Rgb(
+        lerp_channel(from_red, to_red, t),
+        lerp_channel(from_green, to_green, t),
+        lerp_channel(from_blue, to_blue, t),
+    )
+}
+
+fn lerp_channel(from: u8, to: u8, t: f32) -> u8 {
+    let value = f32::from(from) + (f32::from(to) - f32::from(from)) * t;
+    value.round().clamp(f32::from(u8::MIN), f32::from(u8::MAX)) as u8
 }
 
 #[derive(Clone, Debug)]
@@ -209,7 +239,45 @@ fn parse_colorfgbg(value: &str) -> Option<ThemeKind> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ThemeKind, parse_colorfgbg, parse_mode_hint};
+    use super::{Theme, ThemeKind, parse_colorfgbg, parse_mode_hint};
+
+    fn channel_delta(left: ratatui::style::Color, right: ratatui::style::Color) -> u32 {
+        let (
+            ratatui::style::Color::Rgb(left_red, left_green, left_blue),
+            ratatui::style::Color::Rgb(right_red, right_green, right_blue),
+        ) = (left, right)
+        else {
+            panic!("expected rgb colours, got {left:?} and {right:?}");
+        };
+
+        u32::from(left_red.abs_diff(right_red))
+            + u32::from(left_green.abs_diff(right_green))
+            + u32::from(left_blue.abs_diff(right_blue))
+    }
+
+    #[test]
+    fn builtin_themes_have_a_distinct_heat_ramp() {
+        for theme in [Theme::builtin_dark(), Theme::builtin_light()] {
+            let levels = (0..=4)
+                .map(|level| theme.heat_level(level))
+                .collect::<Vec<_>>();
+
+            let mut distinct = levels.clone();
+            distinct.sort_by_key(|color| format!("{color:?}"));
+            distinct.dedup();
+            assert_eq!(distinct.len(), levels.len(), "levels must be distinct");
+
+            for pair in levels.windows(2) {
+                assert!(
+                    channel_delta(pair[0], pair[1]) >= 20,
+                    "adjacent heat levels must be visibly apart, got {pair:?}"
+                );
+            }
+
+            assert_eq!(levels[0], theme.heat_0);
+            assert_eq!(levels[4], theme.heat_4);
+        }
+    }
 
     #[test]
     fn parses_term_theme_hint() {

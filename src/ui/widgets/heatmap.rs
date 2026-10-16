@@ -32,11 +32,11 @@ impl Widget for HeatmapWidget<'_> {
                     (' ', Style::default())
                 } else {
                     match cell.intensity {
-                        0 => ('·', Style::default().fg(self.theme.heat_0)),
-                        1 => ('░', Style::default().fg(self.theme.heat_3)),
-                        2 => ('▒', Style::default().fg(self.theme.heat_3)),
-                        3 => ('▓', Style::default().fg(self.theme.heat_3)),
-                        _ => ('█', Style::default().fg(self.theme.heat_3)),
+                        0 => ('·', Style::default().fg(self.theme.heat_level(0))),
+                        1 => ('░', Style::default().fg(self.theme.heat_level(1))),
+                        2 => ('▒', Style::default().fg(self.theme.heat_level(2))),
+                        3 => ('▓', Style::default().fg(self.theme.heat_level(3))),
+                        _ => ('█', Style::default().fg(self.theme.heat_level(4))),
                     }
                 };
                 spans.push(Span::styled(symbol.to_string(), style));
@@ -53,13 +53,13 @@ pub fn heatmap_legend_line(theme: &Theme) -> Line<'static> {
         Span::styled("    Less ", theme.muted_style()),
         Span::styled("·", Style::default().fg(theme.heat_0)),
         Span::raw(" "),
-        Span::styled("░", Style::default().fg(theme.heat_3)),
+        Span::styled("░", Style::default().fg(theme.heat_4)),
         Span::raw(" "),
-        Span::styled("▒", Style::default().fg(theme.heat_3)),
+        Span::styled("▒", Style::default().fg(theme.heat_4)),
         Span::raw(" "),
-        Span::styled("▓", Style::default().fg(theme.heat_3)),
+        Span::styled("▓", Style::default().fg(theme.heat_4)),
         Span::raw(" "),
-        Span::styled("█", Style::default().fg(theme.heat_3)),
+        Span::styled("█", Style::default().fg(theme.heat_4)),
         Span::styled(" More", theme.muted_style()),
     ])
 }
@@ -95,5 +95,122 @@ fn weekday_label(row_index: usize, weekday: &chrono::Weekday) -> String {
             format!("{:?}", weekday).chars().take(3).collect::<String>()
         ),
         _ => " ".repeat(ROW_LABEL_WIDTH),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HeatmapWidget, ROW_LABEL_WIDTH};
+    use crate::analytics::heatmap_data::{HeatmapCell, HeatmapData};
+    use crate::ui::theme::Theme;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+    use ratatui::style::Color;
+    use ratatui::widgets::Paragraph;
+
+    /// One column per level, so every level appears in the rendered grid.
+    fn data_with_every_level() -> HeatmapData {
+        let weeks = (0..5u8)
+            .map(|level| {
+                (0..7)
+                    .map(|_| HeatmapCell {
+                        intensity: level,
+                        is_future: false,
+                    })
+                    .collect()
+            })
+            .collect();
+
+        HeatmapData {
+            weeks,
+            month_labels: Vec::new(),
+        }
+    }
+
+    fn distinct(colors: Vec<Color>) -> Vec<Color> {
+        let mut seen = Vec::new();
+        for color in colors {
+            if !seen.contains(&color) {
+                seen.push(color);
+            }
+        }
+        seen
+    }
+
+    /// Renders the grid and the legend, and returns the colours of each.
+    fn rendered_heat_colours(theme: &Theme) -> (Vec<Color>, Vec<Color>) {
+        let data = data_with_every_level();
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    HeatmapWidget { data: &data, theme },
+                    Rect::new(0, 0, 40, 10),
+                );
+                frame.render_widget(
+                    Paragraph::new(super::heatmap_legend_line(theme)),
+                    Rect::new(0, 9, 40, 1),
+                );
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let mut grid = Vec::new();
+        let mut legend = Vec::new();
+
+        for y in 1..8u16 {
+            for x in ROW_LABEL_WIDTH as u16..(ROW_LABEL_WIDTH + 5) as u16 {
+                if let Some(cell) = buffer.cell((x, y)) {
+                    grid.push(cell.fg);
+                }
+            }
+        }
+        for x in 0..40u16 {
+            if let Some(cell) = buffer.cell((x, 9))
+                && matches!(cell.symbol(), "·" | "░" | "▒" | "▓" | "█")
+            {
+                legend.push(cell.fg);
+            }
+        }
+
+        (distinct(grid), distinct(legend))
+    }
+
+    #[test]
+    fn every_heat_level_renders_a_distinct_colour() {
+        for theme in [Theme::builtin_dark(), Theme::builtin_light()] {
+            let (grid, _) = rendered_heat_colours(&theme);
+            let expected = (0..=4)
+                .map(|level| theme.heat_level(level))
+                .collect::<Vec<_>>();
+
+            assert_eq!(
+                grid.len(),
+                expected.len(),
+                "each of the five levels must have its own colour, got {grid:?}"
+            );
+            for color in &expected {
+                assert!(
+                    grid.contains(color),
+                    "{color:?} is missing from the rendered grid {grid:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_legend_shows_the_same_colours_as_the_cells() {
+        for theme in [Theme::builtin_dark(), Theme::builtin_light()] {
+            let (grid, legend) = rendered_heat_colours(&theme);
+
+            assert!(!legend.is_empty(), "the legend rendered no swatches");
+            for color in &legend {
+                assert!(
+                    grid.contains(color),
+                    "legend colour {color:?} is not one of the cell colours {grid:?}"
+                );
+            }
+        }
     }
 }

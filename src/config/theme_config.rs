@@ -154,7 +154,7 @@ impl ThemeContent {
             tab_active_fg: parse_hex_color(&self.tab.active_fg)?,
             tab_active_bg: parse_hex_color(&self.tab.active_bg)?,
             heat_0: parse_hex_color(&self.heatmap.empty)?,
-            heat_3: parse_hex_color(&self.heatmap.active)?,
+            heat_4: parse_hex_color(&self.heatmap.active)?,
             model_series: parse_model_series(&self.series.model)?,
         })
     }
