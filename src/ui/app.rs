@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::io::stdout;
 use std::time::{Duration, Instant};
 
+use chrono::{DateTime, Local};
 use color_eyre::eyre::Result;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::style::{StyledContent, Stylize};
@@ -15,7 +16,8 @@ use tokio::sync::mpsc;
 use crate::analytics::model_stats::UsageRow;
 use crate::analytics::{AnalyticsSnapshot, build_snapshot};
 use crate::cache::models_cache::{PricingCatalog, refresh_remote_models};
-use crate::db::models::AppData;
+use crate::db::models::{AppData, InputOptions};
+use crate::db::queries::load_app_data;
 use crate::ui::export::render_share_card;
 use crate::ui::models::MAX_QUERY_LEN;
 use crate::ui::models::{SearchState, render_models, render_providers};
@@ -29,6 +31,7 @@ use crate::utils::time::TimeRange;
 const VIEWPORT_HEIGHT: u16 = 23;
 const STATUS_TTL: Duration = Duration::from_secs(3);
 const TICK_TIME_MS: u16 = 200;
+const DEFAULT_HINTS: &str = "<tab> pages | r cycle | R reload | f find | q quit";
 
 #[derive(Clone, Debug)]
 struct StatusMessage {
@@ -80,6 +83,8 @@ pub struct App {
     pub should_quit: bool,
     status_message: Option<StatusMessage>,
     pub focused_index: usize,
+    input_options: InputOptions,
+    last_read: DateTime<Local>,
     pub search: Option<SearchState>,
     pricing_updates: mpsc::UnboundedReceiver<Result<PricingCatalog>>,
     clipboard_sender: mpsc::UnboundedSender<String>,
@@ -93,6 +98,7 @@ impl App {
         pricing: PricingCatalog,
         theme: Theme,
         zero_cost_behavior: ZeroCostBehavior,
+        input_options: InputOptions,
     ) -> Self {
         let snapshot = build_snapshot(&data, &pricing, TimeRange::All, zero_cost_behavior);
         let (sender, receiver) = mpsc::unbounded_channel();
@@ -113,6 +119,8 @@ impl App {
             should_quit: false,
             status_message: None,
             focused_index: 0,
+            input_options,
+            last_read: Local::now(),
             search: None,
             pricing_updates: receiver,
             clipboard_sender,
@@ -213,6 +221,20 @@ impl App {
         );
     }
 
+    fn reload(&mut self) {
+        match load_app_data(&self.input_options) {
+            Ok(data) => self.finish_reload(data),
+            Err(err) => self.set_status(format!("Reload failed: {err:#}")),
+        }
+    }
+
+    fn finish_reload(&mut self, data: AppData) {
+        self.data = data;
+        self.recompute();
+        self.last_read = Local::now();
+        self.set_status("Reloaded usage data from disk");
+    }
+
     fn render(&self, frame: &mut Frame<'_>) {
         let theme = &self.theme;
         let area = frame.area();
@@ -279,15 +301,19 @@ impl App {
     }
 
     fn render_footer(&self, frame: &mut Frame<'_>, area: ratatui::layout::Rect, theme: &Theme) {
-        let status = self
+        frame.render_widget(
+            ratatui::widgets::Paragraph::new(self.footer_text()).style(theme.muted_style()),
+            area,
+        );
+    }
+
+    fn footer_text(&self) -> String {
+        let base = self
             .status_message
             .as_ref()
             .map(|status| status.text.as_str())
-            .unwrap_or("<tab> ←/→ h/l pages | r cycle | 1/2/3 pick | <ctrl-s> share | q exit");
-        frame.render_widget(
-            ratatui::widgets::Paragraph::new(status).style(theme.muted_style()),
-            area,
-        );
+            .unwrap_or(DEFAULT_HINTS);
+        format!("Loaded {} | {base}", self.last_read.format("%H:%M:%S"))
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
@@ -370,6 +396,8 @@ impl App {
                 self.search = None;
                 self.recompute();
             }
+            // Lowercase 'r' cycles the time range, so live reload takes shifted 'R'.
+            KeyCode::Char('R') => self.reload(),
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.should_quit = true;
             }
@@ -606,5 +634,121 @@ pub fn print_exit_art(theme_kind: ThemeKind) {
             }
             _ => unreachable!(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cache::models_cache::PricingAvailability;
+    use crate::db::models::{DataSourceKind, ImportStats, TokenUsage, UsageEvent};
+    use std::collections::BTreeMap;
+
+    fn test_pricing() -> PricingCatalog {
+        PricingCatalog {
+            models: BTreeMap::new(),
+            cache_path: std::path::PathBuf::from("/tmp/models.json"),
+            refresh_needed: false,
+            availability: PricingAvailability::Empty,
+            load_notice: None,
+        }
+    }
+
+    fn test_event() -> UsageEvent {
+        let now = Local::now();
+        UsageEvent {
+            session_id: "ses_1".to_string(),
+            parent_session_id: None,
+            session_title: None,
+            session_started_at: Some(now),
+            session_archived_at: None,
+            project_name: None,
+            project_path: None,
+            provider_id: Some("openai".to_string()),
+            model_id: "gpt-5".to_string(),
+            agent: None,
+            finish_reason: Some("stop".to_string()),
+            tokens: TokenUsage {
+                input: 10,
+                output: 20,
+                cache_read: 0,
+                cache_write: 0,
+            },
+            created_at: Some(now),
+            completed_at: Some(now),
+            stored_cost_usd: None,
+            source: DataSourceKind::Sqlite,
+        }
+    }
+
+    fn test_data(events: Vec<UsageEvent>) -> AppData {
+        AppData {
+            events,
+            messages: Vec::new(),
+            session_records: Vec::new(),
+            import_stats: ImportStats::default(),
+            sessions: Vec::new(),
+            source: DataSourceKind::Sqlite,
+        }
+    }
+
+    fn test_app(data: AppData, input_options: InputOptions) -> App {
+        App::new(
+            data,
+            test_pricing(),
+            Theme::builtin_dark(),
+            ZeroCostBehavior::KeepZero,
+            input_options,
+        )
+    }
+
+    fn no_input_options() -> InputOptions {
+        InputOptions {
+            database_path: None,
+            json_path: None,
+        }
+    }
+
+    #[test]
+    fn reload_replaces_snapshot_and_preserves_view_state() {
+        let mut app = test_app(test_data(Vec::new()), no_input_options());
+        assert!(app.snapshot.models.is_empty());
+        app.page = Page::Models;
+        app.range = TimeRange::Last7Days;
+        app.search = Some(SearchState::new(vec!["gpt-5".to_string()], 0));
+        let previous_read = app.last_read;
+
+        app.finish_reload(test_data(vec![test_event()]));
+
+        assert_eq!(app.snapshot.models.len(), 1);
+        assert_eq!(app.data.events.len(), 1);
+        assert_eq!(app.page, Page::Models);
+        assert_eq!(app.range, TimeRange::Last7Days);
+        assert_eq!(app.focused_index, 0);
+        assert!(app.search.is_some());
+        assert!(app.last_read >= previous_read);
+        assert!(app.footer_text().contains("Loaded"));
+    }
+
+    #[test]
+    fn reload_key_with_missing_database_keeps_old_snapshot() {
+        let mut app = test_app(
+            test_data(vec![test_event()]),
+            InputOptions {
+                database_path: None,
+                json_path: Some(std::path::PathBuf::from(
+                    "/nonexistent-oc-stats-dir/usage.json",
+                )),
+            },
+        );
+        assert_eq!(app.snapshot.models.len(), 1);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::empty()));
+
+        assert_eq!(app.snapshot.models.len(), 1);
+        assert_eq!(app.data.events.len(), 1);
+        let footer = app.footer_text();
+        assert!(footer.contains("Reload failed"), "footer was: {footer}");
+        assert!(footer.contains("Loaded"), "footer was: {footer}");
     }
 }
