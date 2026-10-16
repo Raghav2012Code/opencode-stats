@@ -3,8 +3,8 @@ use std::io::stdout;
 use std::time::{Duration, Instant};
 
 use color_eyre::eyre::Result;
-use colored::{ColoredString, Colorize};
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::style::{StyledContent, Stylize};
 use futures::StreamExt;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::prelude::CrosstermBackend;
@@ -583,35 +583,36 @@ pub fn print_exit_art(theme_kind: ThemeKind) {
                 ' ' => eprint!(
                     "{}",
                     match theme {
-                        ThemeKind::Dark => "▀".bright_black(),
-                        ThemeKind::Light => "▀".bright_white(),
+                        ThemeKind::Dark => "▀".dark_grey(),
+                        ThemeKind::Light => "▀".white(),
                     }
                 ),
-                ch => eprint!("{}", ch),
+                ch => eprint!("{ch}"),
             }
         }
     }
 
-    fn line_2_oc(str: &str, theme: ThemeKind) -> ColoredString {
+    fn line_2_oc(str: &str, theme: ThemeKind) -> StyledContent<&str> {
         match theme {
-            ThemeKind::Dark => str.bright_black().on_black(),
-            ThemeKind::Light => str.bright_black().on_bright_white(),
+            ThemeKind::Dark => str.dark_grey().on_black(),
+            ThemeKind::Light => str.dark_grey().on_white(),
         }
     }
 
-    fn line_2_stats(str: &str, theme: ThemeKind) -> ColoredString {
+    fn line_2_stats(str: &str, theme: ThemeKind) -> StyledContent<&str> {
         match theme {
-            ThemeKind::Dark => str.on_bright_black(),
-            ThemeKind::Light => str.on_bright_white(),
+            ThemeKind::Dark => str.on_dark_grey(),
+            ThemeKind::Light => str.on_white(),
         }
     }
 
-    for (idx, (o, c, s, t, a)) in itertools::izip!(O, C, S, T, A).enumerate() {
+    for idx in 0..O.len() {
+        let (o, c, s, t, a) = (O[idx], C[idx], S[idx], T[idx], A[idx]);
         match idx {
             0..2 => eprintln!(
                 "  {o} {c}  {s} {t} {a} {t} {s}",
-                o = o.bright_black(),
-                c = c.bright_black(),
+                o = o.dark_grey(),
+                c = c.dark_grey(),
             ),
             2 => eprintln!(
                 "  {o} {c}  {s} {t} {a} {t} {s}",
@@ -622,7 +623,7 @@ pub fn print_exit_art(theme_kind: ThemeKind) {
                 a = line_2_stats(a, theme_kind),
             ),
             3 => {
-                eprint!("  {o} {c}  ", o = o.bright_black(), c = c.bright_black());
+                eprint!("  {o} {c}  ", o = o.dark_grey(), c = c.dark_grey());
                 eprint_last_line(s, theme_kind);
                 eprint!(" ");
                 eprint_last_line(t, theme_kind);
