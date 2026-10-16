@@ -69,7 +69,7 @@ pub fn build_snapshot(
         today,
         zero_cost_behavior,
     );
-    let heatmap = build_heatmap_data(&data.events, today);
+    let heatmap = build_heatmap_data(&filtered_events, range, today);
 
     let total_tokens = saturating_sum(filtered_events.iter().map(|event| event.tokens.total()));
     let input_tokens = saturating_sum(filtered_events.iter().map(|event| event.tokens.input));
