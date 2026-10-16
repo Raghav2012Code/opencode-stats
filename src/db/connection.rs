@@ -65,24 +65,29 @@ pub fn open_database(path: &Path) -> Result<Connection> {
         .map_err(|e| Error::database_open(path, e))
 }
 
+pub fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        [table],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|exists| exists == 1)
+    .map_err(Error::database_query)
+}
+
 pub fn database_has_expected_tables(path: &Path) -> Result<bool> {
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|e| Error::database_open(path, e))?;
 
-    for table in ["session", "message", "project"] {
-        let exists = conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-                [table],
-                |row| row.get::<_, i64>(0),
-            )
-            .map_err(Error::database_query)?;
-        if exists == 0 {
-            return Ok(false);
-        }
+    if !table_exists(&conn, "project")? {
+        return Ok(false);
     }
 
-    Ok(true)
+    // Either the pre-migration tables or the modern ones must be present.
+    let legacy = table_exists(&conn, "session")? && table_exists(&conn, "message")?;
+    let modern = table_exists(&conn, "session_v2")? && table_exists(&conn, "session_message")?;
+
+    Ok(legacy || modern)
 }
 
 fn dedupe_preserve_order(paths: Vec<PathBuf>) -> Vec<PathBuf> {

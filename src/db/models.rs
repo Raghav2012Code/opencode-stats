@@ -266,7 +266,8 @@ pub struct JsonMessageRecord {
 pub struct JsonModelRecord {
     #[serde(rename = "providerID")]
     pub provider_id: Option<String>,
-    #[serde(rename = "modelID")]
+    // Modern payloads name this field `id` instead of `modelID`.
+    #[serde(rename = "modelID", alias = "id")]
     pub model_id: Option<String>,
 }
 

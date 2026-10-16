@@ -94,10 +94,15 @@ pub fn build_snapshot(
         update_price_summary(&mut total_cost, pricing, event, zero_cost_behavior);
     }
     let session_ids = filter_session_ids(data, &filtered_events, &filtered_messages, range, today);
+    // Compaction digests are usage, not conversation: they must not inflate the
+    // message count the way a user or assistant turn does.
     let messages = data
         .messages
         .iter()
-        .filter(|message| session_ids.contains(&message.session_id))
+        .filter(|message| {
+            session_ids.contains(&message.session_id)
+                && matches!(message.role.as_deref(), Some("assistant") | Some("user"))
+        })
         .count();
     let prompts = data
         .messages

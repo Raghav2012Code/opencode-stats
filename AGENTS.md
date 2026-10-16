@@ -8,7 +8,7 @@ Data flow: `db::queries::load_app_data` → `analytics::build_snapshot` → `ui:
 
 ## Key Rules
 
-- Only assistant messages count toward usage
+- Usage counts `assistant` and `compaction` messages (both are billed model calls); `user` messages count as prompts only
 - Default database paths: `%APPDATA%/opencode/opencode.db` (Windows), `~/.local/share/opencode/opencode.db` (Linux), `~/Library/Application Support/opencode/opencode.db` (macOS)
 
 ### Error Handling

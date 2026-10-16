@@ -39,17 +39,10 @@ pub fn load_app_data(options: &InputOptions) -> Result<AppData> {
 
 pub fn load_from_sqlite(db_path: &Path) -> Result<AppData> {
     let conn = open_database(db_path)?;
+    let modern = has_modern_schema(&conn)?;
 
     let mut session_stmt = conn
-        .prepare(
-            "
-        SELECT s.id, s.parent_id, s.title, s.time_created, s.time_updated, s.time_archived,
-               p.name as project_name, p.worktree as project_worktree
-        FROM session s
-        LEFT JOIN project p ON s.project_id = p.id
-        ORDER BY s.time_created DESC
-        ",
-        )
+        .prepare(sessions_sql(modern))
         .map_err(Error::database_query)?;
 
     let sessions_iter = session_stmt
@@ -84,7 +77,7 @@ pub fn load_from_sqlite(db_path: &Path) -> Result<AppData> {
         .iter()
         .map(|session| (session.id.as_str(), session))
         .collect::<BTreeMap<_, _>>();
-    let sqlite_messages = load_messages_sqlite(&conn, &session_lookup)?;
+    let sqlite_messages = load_messages_sqlite(&conn, &session_lookup, modern)?;
 
     let mut all_events = Vec::new();
     let mut all_messages = Vec::new();
@@ -117,6 +110,59 @@ pub fn load_from_sqlite(db_path: &Path) -> Result<AppData> {
     )
 }
 
+/// Current OpenCode releases write sessions to `session_v2` and their messages to
+/// `session_message`; the `session`/`message` pair keeps the pre-migration rows and a
+/// migrated row is kept in both tables under the same id. Reading only the legacy pair
+/// drops every modern session, while reading both tables whole double counts every
+/// migrated row, so read the v2 rows and add only the legacy rows v2 does not have.
+fn has_modern_schema(conn: &rusqlite::Connection) -> Result<bool> {
+    Ok(connection::table_exists(conn, "session_v2")?
+        && connection::table_exists(conn, "session_message")?)
+}
+
+fn sessions_sql(modern: bool) -> &'static str {
+    if modern {
+        "
+        SELECT s.id, s.parent_id, s.title, s.time_created, s.time_updated, s.time_archived,
+               p.name as project_name, p.worktree as project_worktree
+        FROM session_v2 s
+        LEFT JOIN project p ON s.project_id = p.id
+        UNION ALL
+        SELECT s.id, s.parent_id, s.title, s.time_created, s.time_updated, s.time_archived,
+               p.name as project_name, p.worktree as project_worktree
+        FROM session s
+        LEFT JOIN project p ON s.project_id = p.id
+        WHERE s.id NOT IN (SELECT id FROM session_v2)
+        "
+    } else {
+        "
+        SELECT s.id, s.parent_id, s.title, s.time_created, s.time_updated, s.time_archived,
+               p.name as project_name, p.worktree as project_worktree
+        FROM session s
+        LEFT JOIN project p ON s.project_id = p.id
+        "
+    }
+}
+
+fn messages_sql(modern: bool) -> &'static str {
+    if modern {
+        "
+        SELECT session_id, type AS role, data
+        FROM session_message
+        WHERE type IN ('assistant', 'compaction', 'user')
+        UNION ALL
+        SELECT session_id, NULL AS role, data
+        FROM message
+        WHERE id NOT IN (SELECT id FROM session_message)
+        "
+    } else {
+        "
+        SELECT session_id, NULL AS role, data
+        FROM message
+        "
+    }
+}
+
 struct ParsedMessage {
     record: MessageRecord,
     event: Option<UsageEvent>,
@@ -130,15 +176,10 @@ struct SqliteMessageLoad {
 fn load_messages_sqlite(
     conn: &rusqlite::Connection,
     sessions: &BTreeMap<&str, &SessionRow>,
+    modern: bool,
 ) -> Result<SqliteMessageLoad> {
     let mut stmt = conn
-        .prepare(
-            "
-            SELECT session_id, data
-            FROM message
-            ORDER BY session_id ASC, time_created ASC
-            ",
-        )
+        .prepare(messages_sql(modern))
         .map_err(Error::database_query)?;
 
     let mut messages = Vec::new();
@@ -150,6 +191,7 @@ fn load_messages_sqlite(
             skipped_messages = skipped_messages.saturating_add(1);
             continue;
         };
+        let role_hint: Option<String> = row.get("role").map_err(Error::database_query)?;
 
         let data = match row.get_ref("data").map_err(Error::database_query)? {
             rusqlite::types::ValueRef::Text(bytes) => bytes,
@@ -159,13 +201,18 @@ fn load_messages_sqlite(
             }
         };
 
-        let record: JsonMessageRecord = match serde_json::from_slice(data) {
+        let mut record: JsonMessageRecord = match serde_json::from_slice(data) {
             Ok(record) => record,
             Err(_) => {
                 skipped_messages = skipped_messages.saturating_add(1);
                 continue;
             }
         };
+
+        // Modern messages keep the role in the `type` column, not in the payload.
+        if record.role.is_none() {
+            record.role = role_hint;
+        }
 
         if let Some(message) = parse_json_record(record, session, DataSourceKind::Sqlite) {
             messages.push(message);
@@ -328,7 +375,10 @@ fn parse_json_record(
         source,
     };
 
-    if role.as_deref() != Some("assistant") {
+    // `compaction` is a model call that produces a session digest, so it carries
+    // billable usage but is neither a user prompt nor an assistant turn.
+    let carries_usage = matches!(role.as_deref(), Some("assistant") | Some("compaction"));
+    if !carries_usage {
         return Some(ParsedMessage {
             record: message,
             event: None,
@@ -523,6 +573,157 @@ mod tests {
         assert_eq!(data.import_stats.skipped_json_records, 1);
         assert_eq!(data.messages.len(), 1);
         assert_eq!(data.events.len(), 1);
+    }
+
+    #[test]
+    fn reads_modern_tables_without_double_counting_migrated_sessions() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let db_path = std::env::temp_dir().join(format!("oc-stats-v2-test-{nonce}.db"));
+        let conn = Connection::open(&db_path).unwrap();
+
+        conn.execute_batch(
+            "
+            CREATE TABLE project (id TEXT PRIMARY KEY, name TEXT, worktree TEXT);
+            CREATE TABLE session (
+                id TEXT PRIMARY KEY,
+                project_id TEXT,
+                parent_id TEXT,
+                title TEXT,
+                time_created INTEGER,
+                time_updated INTEGER,
+                time_archived INTEGER
+            );
+            CREATE TABLE message (
+                id TEXT PRIMARY KEY,
+                session_id TEXT,
+                data TEXT,
+                time_created INTEGER
+            );
+            CREATE TABLE session_v2 (
+                id TEXT PRIMARY KEY,
+                project_id TEXT,
+                parent_id TEXT,
+                title TEXT,
+                time_created INTEGER,
+                time_updated INTEGER,
+                time_archived INTEGER
+            );
+            CREATE TABLE session_message (
+                id TEXT PRIMARY KEY,
+                session_id TEXT,
+                type TEXT,
+                seq INTEGER,
+                time_created INTEGER,
+                time_updated INTEGER,
+                data TEXT
+            );
+            ",
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO project (id, name, worktree) VALUES ('proj_1', 'demo', '/tmp/demo')",
+            [],
+        )
+        .unwrap();
+
+        let session_insert = "INSERT INTO {} (id, project_id, title, time_created, time_updated) \
+                              VALUES (?1, 'proj_1', ?2, 1710000000000, 1710000001000)";
+        for (table, id, title) in [
+            ("session", "ses_migrated", "Migrated"),
+            ("session_v2", "ses_migrated", "Migrated"),
+            ("session", "ses_legacy", "Legacy only"),
+            ("session_v2", "ses_new", "Modern only"),
+        ] {
+            conn.execute(&session_insert.replace("{}", table), (id, title))
+                .unwrap();
+        }
+
+        // A migrated row is kept in both tables under the same id: counted once.
+        conn.execute(
+            "INSERT INTO message (id, session_id, data) VALUES ('msg_1', 'ses_migrated', ?1)",
+            [r#"{"role":"assistant","providerID":"opencode","modelID":"muse-spark","cost":0.10,"tokens":{"input":100,"output":10},"time":{"created":1710000000000,"completed":1710000001000}}"#],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_message (id, session_id, type, seq, data) \
+             VALUES ('msg_1', 'ses_migrated', 'assistant', 1, ?1)",
+            [r#"{"model":{"providerID":"opencode","id":"muse-spark"},"cost":0.10,"tokens":{"input":100,"output":10,"reasoning":5,"cache":{"read":0,"write":0}},"time":{"created":1710000000000,"completed":1710000001000}}"#],
+        )
+        .unwrap();
+
+        // A row the migration never copied: real usage that only the legacy table has.
+        conn.execute(
+            "INSERT INTO message (id, session_id, data) VALUES ('msg_orphan', 'ses_migrated', ?1)",
+            [r#"{"role":"assistant","providerID":"opencode","modelID":"muse-spark","cost":0.05,"tokens":{"input":50,"output":5},"time":{"created":1710000000000,"completed":1710000001000}}"#],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO message (id, session_id, data) VALUES ('msg_2', 'ses_legacy', ?1)",
+            [r#"{"role":"assistant","providerID":"opencode","modelID":"muse-spark","cost":0.40,"tokens":{"input":100,"output":10},"time":{"created":1710000000000,"completed":1710000001000}}"#],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_message (id, session_id, type, seq, data) \
+             VALUES ('msg_3', 'ses_new', 'assistant', 1, ?1)",
+            [r#"{"model":{"providerID":"opencode","id":"glm-5.3-flash"},"cost":1.25,"tokens":{"input":100,"output":10},"time":{"created":1710000000000,"completed":1710000001000}}"#],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_message (id, session_id, type, seq, data) \
+             VALUES ('msg_4', 'ses_new', 'user', 2, ?1)",
+            [r#"{"content":[]}"#],
+        )
+        .unwrap();
+        // A compaction digest is a billed model call with no user or assistant turn.
+        conn.execute(
+            "INSERT INTO session_message (id, session_id, type, seq, data) \
+             VALUES ('msg_5', 'ses_new', 'compaction', 3, ?1)",
+            [r#"{"model":{"providerID":"opencode-go","id":"space-bunny-free"},"cost":0.25,"summary":"Objective ...","tokens":{"input":70,"output":7,"cache":{"read":0,"write":0}},"time":{"created":1710000000000}}"#],
+        )
+        .unwrap();
+        drop(conn);
+
+        let data = load_from_sqlite(&db_path).unwrap();
+        let total_cost: rust_decimal::Decimal = data
+            .events
+            .iter()
+            .map(|event| event.stored_cost_usd.unwrap())
+            .sum();
+
+        assert_eq!(data.events.len(), 5);
+        assert_eq!(data.sessions.len(), 3);
+        assert_eq!(total_cost, rust_decimal::Decimal::new(205, 2));
+        assert_eq!(data.messages.len(), 6);
+        let modern = data
+            .events
+            .iter()
+            .find(|event| event.model_id == "glm-5.3-flash")
+            .unwrap();
+        assert_eq!(modern.provider_id.as_deref(), Some("opencode"));
+        assert_eq!(modern.session_id, "ses_new");
+        let compaction = data
+            .events
+            .iter()
+            .find(|event| event.model_id == "space-bunny-free")
+            .unwrap();
+        assert_eq!(
+            compaction.stored_cost_usd,
+            Some(rust_decimal::Decimal::new(25, 2))
+        );
+        assert_eq!(
+            data.events
+                .iter()
+                .filter(|event| event.session_id == "ses_migrated")
+                .count(),
+            2
+        );
+
+        let _ = fs::remove_file(db_path);
     }
 
     #[test]
