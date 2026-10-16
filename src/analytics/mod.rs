@@ -384,8 +384,6 @@ mod tests {
                 output: rust_decimal::Decimal::new(100, 0),
                 cache_write: rust_decimal::Decimal::ZERO,
                 cache_read: rust_decimal::Decimal::ZERO,
-                context_window: 0,
-                session_quota: rust_decimal::Decimal::ZERO,
             },
         );
         let data = AppData {
@@ -455,8 +453,6 @@ mod tests {
                 output: rust_decimal::Decimal::new(100, 0),
                 cache_write: rust_decimal::Decimal::ZERO,
                 cache_read: rust_decimal::Decimal::ZERO,
-                context_window: 0,
-                session_quota: rust_decimal::Decimal::ZERO,
             },
         );
         let data = AppData {

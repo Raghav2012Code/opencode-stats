@@ -92,8 +92,6 @@ mod tests {
                 output: Decimal::new(200, 0),
                 cache_write: Decimal::ZERO,
                 cache_read: Decimal::ZERO,
-                context_window: 0,
-                session_quota: Decimal::ZERO,
             },
         );
 

@@ -23,10 +23,6 @@ pub struct ModelPricing {
     pub cache_write: Decimal,
     #[serde(rename = "cacheRead", alias = "cache_read", default)]
     pub cache_read: Decimal,
-    #[serde(rename = "contextWindow", default)]
-    pub context_window: u64,
-    #[serde(rename = "sessionQuota", default)]
-    pub session_quota: Decimal,
 }
 
 impl ModelPricing {
@@ -281,7 +277,6 @@ fn collect_provider_models(
 
 fn pricing_from_model(model_data: &serde_json::Value) -> Option<ModelPricing> {
     let cost = model_data.get("cost").and_then(|value| value.as_object())?;
-    let limit = model_data.get("limit").and_then(|value| value.as_object());
 
     Some(
         ModelPricing {
@@ -305,11 +300,6 @@ fn pricing_from_model(model_data: &serde_json::Value) -> Option<ModelPricing> {
                     .or_else(|| cost.get("input_cache_read"))
                     .or_else(|| cost.get("read")),
             ),
-            context_window: limit
-                .and_then(|map| map.get("context"))
-                .and_then(|value| value.as_u64())
-                .unwrap_or_default(),
-            session_quota: Decimal::ZERO,
         }
         .with_fallbacks(),
     )
@@ -354,8 +344,6 @@ mod tests {
                 output: Decimal::new(2, 0),
                 cache_write: Decimal::ONE,
                 cache_read: Decimal::new(1, 1),
-                context_window: 0,
-                session_quota: Decimal::ZERO,
             },
         );
         let catalog = super::PricingCatalog {
@@ -399,8 +387,6 @@ mod tests {
             output: Decimal::new(15, 0),
             cache_write: Decimal::ZERO,
             cache_read: Decimal::ZERO,
-            context_window: 0,
-            session_quota: Decimal::ZERO,
         }
         .with_fallbacks();
 
@@ -438,8 +424,6 @@ mod tests {
                 output: Decimal::new(2, 0),
                 cache_write: Decimal::ONE,
                 cache_read: Decimal::new(1, 1),
-                context_window: 0,
-                session_quota: Decimal::ZERO,
             },
         );
         let catalog = super::PricingCatalog {
@@ -481,8 +465,6 @@ mod tests {
                 output: Decimal::new(2, 0),
                 cache_write: Decimal::ONE,
                 cache_read: Decimal::new(1, 1),
-                context_window: 0,
-                session_quota: Decimal::ZERO,
             },
         );
         let catalog = super::PricingCatalog {
