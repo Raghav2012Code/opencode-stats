@@ -79,8 +79,7 @@ pub struct App {
     pub zero_cost_behavior: ZeroCostBehavior,
     pub should_quit: bool,
     status_message: Option<StatusMessage>,
-    pub focused_model_index: usize,
-    pub focused_provider_index: usize,
+    pub focused_index: usize,
     pub search: Option<SearchState>,
     pricing_updates: mpsc::UnboundedReceiver<Result<PricingCatalog>>,
     clipboard_sender: mpsc::UnboundedSender<String>,
@@ -113,8 +112,7 @@ impl App {
             zero_cost_behavior,
             should_quit: false,
             status_message: None,
-            focused_model_index: 0,
-            focused_provider_index: 0,
+            focused_index: 0,
             search: None,
             pricing_updates: receiver,
             clipboard_sender,
@@ -246,7 +244,7 @@ impl App {
                 frame,
                 body,
                 &self.snapshot,
-                self.focused_model_index,
+                self.focused_index,
                 self.search.as_ref(),
                 theme,
             ),
@@ -254,7 +252,7 @@ impl App {
                 frame,
                 body,
                 &self.snapshot,
-                self.focused_provider_index,
+                self.focused_index,
                 self.search.as_ref(),
                 theme,
             ),
@@ -297,12 +295,10 @@ impl App {
             match key.code {
                 KeyCode::Esc => self.search = None,
                 KeyCode::Enter => {
-                    if let Some(&real_idx) = search.filtered_indices.get(search.selected) {
-                        match self.page {
-                            Page::Models => self.focused_model_index = real_idx,
-                            Page::Providers => self.focused_provider_index = real_idx,
-                            _ => {}
-                        }
+                    if let Some(&real_idx) = search.filtered_indices.get(search.selected)
+                        && !matches!(self.page, Page::Overview)
+                    {
+                        self.focused_index = real_idx;
                     }
                     self.search = None;
                 }
@@ -359,17 +355,18 @@ impl App {
             KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
                 self.search = None;
                 self.page = self.page.next();
+                self.focused_index = 0;
             }
             KeyCode::Left | KeyCode::Char('h') => {
                 self.search = None;
                 self.page = self.page.previous();
+                self.focused_index = 0;
             }
             KeyCode::Down | KeyCode::Char('j') => self.advance_focused_model(1),
             KeyCode::Up | KeyCode::Char('k') => self.advance_focused_model(-1),
             KeyCode::Char('r') => {
                 self.range = self.range.cycle();
-                self.focused_model_index = 0;
-                self.focused_provider_index = 0;
+                self.focused_index = 0;
                 self.search = None;
                 self.recompute();
             }
@@ -387,8 +384,7 @@ impl App {
             KeyCode::Char(value) => {
                 if let Some(range) = TimeRange::from_shortcut(value) {
                     self.range = range;
-                    self.focused_model_index = 0;
-                    self.focused_provider_index = 0;
+                    self.focused_index = 0;
                     self.search = None;
                     self.recompute();
                 }
@@ -398,52 +394,26 @@ impl App {
     }
 
     fn advance_focused_model(&mut self, delta: isize) {
-        match self.page {
-            Page::Models => {
-                if self.snapshot.models.is_empty() {
-                    return;
-                }
-
-                let current = self.focused_model_index as isize;
-                let total = self.snapshot.models.len() as isize;
-                let next = (current + delta).rem_euclid(total) as usize;
-                self.focused_model_index = next;
-            }
-            Page::Providers => {
-                if self.snapshot.providers.is_empty() {
-                    return;
-                }
-
-                let current = self.focused_provider_index as isize;
-                let total = self.snapshot.providers.len() as isize;
-                let next = (current + delta).rem_euclid(total) as usize;
-                self.focused_provider_index = next;
-            }
-            Page::Overview => {}
+        let total = match self.page {
+            Page::Models => self.snapshot.models.len(),
+            Page::Providers => self.snapshot.providers.len(),
+            Page::Overview => return,
+        };
+        if total == 0 {
+            return;
         }
+        let next = (self.focused_index as isize + delta).rem_euclid(total as isize) as usize;
+        self.focused_index = next;
     }
 
     fn enter_search(&mut self) {
-        let (ids, focused) = match self.page {
-            Page::Models => (
-                self.snapshot
-                    .models
-                    .iter()
-                    .map(|row| row.id.clone())
-                    .collect::<Vec<_>>(),
-                self.focused_model_index,
-            ),
-            Page::Providers => (
-                self.snapshot
-                    .providers
-                    .iter()
-                    .map(|row| row.id.clone())
-                    .collect::<Vec<_>>(),
-                self.focused_provider_index,
-            ),
+        let rows = match self.page {
+            Page::Models => &self.snapshot.models,
+            Page::Providers => &self.snapshot.providers,
             _ => return,
         };
-        self.search = Some(SearchState::new(ids, focused));
+        let ids = rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>();
+        self.search = Some(SearchState::new(ids, self.focused_index));
     }
 
     fn update_search_filter(&mut self) {
