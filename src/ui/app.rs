@@ -245,12 +245,11 @@ impl App {
         frame.render_widget(ratatui::widgets::Paragraph::new(""), spacer);
 
         match self.page {
-            Page::Overview => render_overview(frame, body, &self.snapshot, self.range, theme),
+            Page::Overview => render_overview(frame, body, &self.snapshot, theme),
             Page::Models => render_models(
                 frame,
                 body,
                 &self.snapshot,
-                self.range,
                 self.focused_model_index,
                 self.search.as_ref(),
                 theme,
@@ -259,7 +258,6 @@ impl App {
                 frame,
                 body,
                 &self.snapshot,
-                self.range,
                 self.focused_provider_index,
                 self.search.as_ref(),
                 theme,

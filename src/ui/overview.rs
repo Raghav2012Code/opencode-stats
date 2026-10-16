@@ -12,7 +12,6 @@ pub fn render_overview(
     frame: &mut ratatui::Frame<'_>,
     area: Rect,
     snapshot: &AnalyticsSnapshot,
-    _range: crate::utils::time::TimeRange,
     theme: &Theme,
 ) {
     let [heatmap, legend, spacer, favorite, stats, _, fun] = Layout::default()
