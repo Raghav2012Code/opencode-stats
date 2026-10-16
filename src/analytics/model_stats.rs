@@ -8,25 +8,11 @@ use crate::utils::formatting::percentage;
 use crate::utils::pricing::{PriceSummary, ZeroCostBehavior, update_price_summary};
 use crate::utils::time::TimeRange;
 
+/// One aggregated usage row. `id` is a model id on the Models page and a provider id
+/// on the Providers page; every other field means the same on both.
 #[derive(Clone, Debug)]
-pub struct ModelUsageRow {
-    pub model_id: String,
-    pub total_tokens: u64,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cache_tokens: u64,
-    pub messages: usize,
-    pub prompts: usize,
-    pub sessions: usize,
-    pub active_days: usize,
-    pub cost: PriceSummary,
-    pub percentage: f64,
-    pub p50_output_tokens_per_second: f64,
-}
-
-#[derive(Clone, Debug)]
-pub struct ProviderUsageRow {
-    pub provider_id: String,
+pub struct UsageRow {
+    pub id: String,
     pub total_tokens: u64,
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -63,74 +49,17 @@ pub fn build_model_chart(
     range: TimeRange,
     today: NaiveDate,
     zero_cost_behavior: ZeroCostBehavior,
-) -> (Vec<ModelUsageRow>, ModelChartData) {
-    let mut model_rows = BTreeMap::<String, UsageAccumulator>::new();
-
-    for message in messages {
-        let message = *message;
-        let Some(model) = message.model_id.clone() else {
-            continue;
-        };
-        let entry = model_rows.entry(model).or_default();
-        if message.role.as_deref() == Some("assistant") {
-            entry.messages += 1;
-        }
-        if message.role.as_deref() == Some("user") {
-            entry.prompts += 1;
-        }
-    }
-
-    for event in events {
-        let event = *event;
-        let model = event.model_id.clone();
-        let entry = model_rows.entry(model).or_default();
-        entry.tokens.add_assign(&event.tokens);
-        entry.sessions.insert(event.session_id.clone());
-        update_price_summary(&mut entry.cost, pricing, event, zero_cost_behavior);
-        if let Some(date) = event.activity_date() {
-            entry.active_days.insert(date);
-            let total = entry.daily_tokens.entry(date).or_default();
-            *total = total.saturating_add(event.tokens.total());
-        }
-        if event.is_rate_eligible()
-            && let Some(duration_ms) = event.duration_ms()
-        {
-            let rate = event.tokens.output as f64 / (duration_ms as f64 / 1_000.0);
-            entry.output_rates.push(rate);
-        }
-    }
-
-    let overall_tokens = model_rows
-        .values()
-        .map(|row| row.tokens.total())
-        .fold(0u64, |total, value| total.saturating_add(value));
-    let mut rows = model_rows
-        .into_iter()
-        .map(|(model_id, row)| ModelUsageRow {
-            model_id,
-            total_tokens: row.tokens.total(),
-            input_tokens: row.tokens.input,
-            output_tokens: row.tokens.output,
-            cache_tokens: row.tokens.cache_read.saturating_add(row.tokens.cache_write),
-            percentage: percentage(row.tokens.total(), overall_tokens),
-            messages: row.messages,
-            prompts: row.prompts,
-            sessions: row.sessions.len(),
-            active_days: row.active_days.len(),
-            cost: row.cost,
-            p50_output_tokens_per_second: median(&row.output_rates),
-        })
-        .collect::<Vec<_>>();
-
-    rows.sort_by_key(|right| std::cmp::Reverse(right.total_tokens));
-
-    let top_models = rows
-        .iter()
-        .map(|row| row.model_id.clone())
-        .collect::<Vec<_>>();
-    let chart = build_chart_for_models(events, &top_models, range, today, |event| {
-        event.model_id.clone()
-    });
+) -> (Vec<UsageRow>, ModelChartData) {
+    let rows = build_rows(
+        events,
+        messages,
+        pricing,
+        zero_cost_behavior,
+        model_event_key,
+        model_message_key,
+    );
+    let keys = rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>();
+    let chart = build_chart_for_models(events, &keys, range, today, model_event_key);
     (rows, chart)
 }
 
@@ -141,30 +70,66 @@ pub fn build_provider_chart(
     range: TimeRange,
     today: NaiveDate,
     zero_cost_behavior: ZeroCostBehavior,
-) -> (Vec<ProviderUsageRow>, ModelChartData) {
-    let mut provider_rows = BTreeMap::<String, UsageAccumulator>::new();
+) -> (Vec<UsageRow>, ModelChartData) {
+    let rows = build_rows(
+        events,
+        messages,
+        pricing,
+        zero_cost_behavior,
+        provider_event_key,
+        provider_message_key,
+    );
+    let keys = rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>();
+    let chart = build_chart_for_models(events, &keys, range, today, provider_event_key);
+    (rows, chart)
+}
+
+fn provider_label(provider_id: Option<&str>) -> String {
+    provider_id.unwrap_or("unknown").to_string()
+}
+
+fn model_event_key(event: &UsageEvent) -> String {
+    event.model_id.clone()
+}
+
+fn provider_event_key(event: &UsageEvent) -> String {
+    provider_label(event.provider_id.as_deref())
+}
+
+fn model_message_key(message: &MessageRecord) -> Option<String> {
+    message.model_id.clone()
+}
+
+fn provider_message_key(message: &MessageRecord) -> Option<String> {
+    Some(provider_label(message.provider_id.as_deref()))
+}
+
+fn build_rows(
+    events: &[&UsageEvent],
+    messages: &[&MessageRecord],
+    pricing: &PricingCatalog,
+    zero_cost_behavior: ZeroCostBehavior,
+    event_key: fn(&UsageEvent) -> String,
+    message_key: fn(&MessageRecord) -> Option<String>,
+) -> Vec<UsageRow> {
+    let mut grouped = BTreeMap::<String, UsageAccumulator>::new();
 
     for message in messages {
-        let provider = message
-            .provider_id
-            .clone()
-            .unwrap_or_else(|| "unknown".to_string());
-        let entry = provider_rows.entry(provider).or_default();
-        if message.role.as_deref() == Some("assistant") {
-            entry.messages += 1;
-        }
-        if message.role.as_deref() == Some("user") {
-            entry.prompts += 1;
+        let Some(key) = message_key(message) else {
+            continue;
+        };
+        let entry = grouped.entry(key).or_default();
+        match message.role.as_deref() {
+            Some("assistant") => entry.messages += 1,
+            Some("user") => entry.prompts += 1,
+            _ => {}
         }
     }
 
     for event in events {
         let event = *event;
-        let provider = event
-            .provider_id
-            .clone()
-            .unwrap_or_else(|| "unknown".to_string());
-        let entry = provider_rows.entry(provider).or_default();
+        let key = event_key(event);
+        let entry = grouped.entry(key).or_default();
         entry.tokens.add_assign(&event.tokens);
         entry.sessions.insert(event.session_id.clone());
         update_price_summary(&mut entry.cost, pricing, event, zero_cost_behavior);
@@ -181,14 +146,14 @@ pub fn build_provider_chart(
         }
     }
 
-    let overall_tokens = provider_rows
+    let overall_tokens = grouped
         .values()
         .map(|row| row.tokens.total())
         .fold(0u64, |total, value| total.saturating_add(value));
-    let mut rows = provider_rows
+    let mut rows = grouped
         .into_iter()
-        .map(|(provider_id, row)| ProviderUsageRow {
-            provider_id,
+        .map(|(id, row)| UsageRow {
+            id,
             total_tokens: row.tokens.total(),
             input_tokens: row.tokens.input,
             output_tokens: row.tokens.output,
@@ -205,17 +170,7 @@ pub fn build_provider_chart(
 
     rows.sort_by_key(|right| std::cmp::Reverse(right.total_tokens));
 
-    let providers = rows
-        .iter()
-        .map(|row| row.provider_id.clone())
-        .collect::<Vec<_>>();
-    let chart = build_chart_for_models(events, &providers, range, today, |event| {
-        event
-            .provider_id
-            .clone()
-            .unwrap_or_else(|| "unknown".to_string())
-    });
-    (rows, chart)
+    rows
 }
 
 pub fn chart_with_focus(chart: &ModelChartData, focused_model_id: Option<&str>) -> ModelChartData {
@@ -451,10 +406,97 @@ fn median(values: &[f64]) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::build_chart_for_models;
-    use crate::db::models::{DataSourceKind, TokenUsage, UsageEvent};
+    use super::{build_chart_for_models, build_model_chart, build_provider_chart};
+    use crate::cache::models_cache::{PricingAvailability, PricingCatalog};
+    use crate::db::models::{DataSourceKind, MessageRecord, TokenUsage, UsageEvent};
+    use crate::utils::pricing::ZeroCostBehavior;
     use crate::utils::time::TimeRange;
     use chrono::{Local, NaiveDate, TimeZone};
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
+    fn empty_pricing() -> PricingCatalog {
+        PricingCatalog {
+            models: BTreeMap::new(),
+            cache_path: PathBuf::from("/tmp/models.json"),
+            refresh_needed: false,
+            availability: PricingAvailability::Empty,
+            load_notice: None,
+        }
+    }
+
+    fn usage_event(provider_id: &str, model_id: &str, day: u32) -> UsageEvent {
+        let created_at = Local
+            .with_ymd_and_hms(2026, 3, day, 9, 30, 0)
+            .single()
+            .unwrap();
+
+        UsageEvent {
+            session_id: "ses_1".to_string(),
+            parent_session_id: None,
+            session_title: None,
+            session_started_at: Some(created_at),
+            session_archived_at: None,
+            project_name: None,
+            project_path: None,
+            provider_id: Some(provider_id.to_string()),
+            model_id: model_id.to_string(),
+            agent: None,
+            finish_reason: None,
+            tokens: TokenUsage {
+                input: 1,
+                output: 2,
+                cache_read: 0,
+                cache_write: 0,
+            },
+            created_at: Some(created_at),
+            completed_at: Some(created_at),
+            stored_cost_usd: None,
+            source: DataSourceKind::Json,
+        }
+    }
+
+    #[test]
+    fn each_page_keys_its_rows_and_chart_by_its_own_field() {
+        let event = usage_event("openai", "gpt-5", 12);
+        let message = MessageRecord {
+            session_id: "ses_1".to_string(),
+            role: Some("assistant".to_string()),
+            provider_id: Some("openai".to_string()),
+            model_id: Some("gpt-5".to_string()),
+            created_at: event.created_at,
+            source: DataSourceKind::Json,
+        };
+        let today = NaiveDate::from_ymd_opt(2026, 3, 12).unwrap();
+        let pricing = empty_pricing();
+
+        let (model_rows, model_chart) = build_model_chart(
+            &[&event],
+            &[&message],
+            &pricing,
+            TimeRange::All,
+            today,
+            ZeroCostBehavior::KeepZero,
+        );
+        let (provider_rows, provider_chart) = build_provider_chart(
+            &[&event],
+            &[&message],
+            &pricing,
+            TimeRange::All,
+            today,
+            ZeroCostBehavior::KeepZero,
+        );
+
+        assert_eq!(model_rows.len(), 1);
+        assert_eq!(model_rows[0].id, "gpt-5");
+        assert_eq!(provider_rows.len(), 1);
+        assert_eq!(provider_rows[0].id, "openai");
+
+        assert_eq!(model_chart.series.len(), 1);
+        assert_eq!(model_chart.series[0].model_id, "gpt-5");
+        assert_eq!(provider_chart.series.len(), 1);
+        assert_eq!(provider_chart.series[0].model_id, "openai");
+    }
 
     #[test]
     fn single_day_chart_builds_labels_without_unwrap_assumptions() {

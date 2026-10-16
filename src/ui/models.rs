@@ -7,7 +7,7 @@ use ratatui::widgets::Paragraph;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::analytics::AnalyticsSnapshot;
-use crate::analytics::model_stats::{ModelUsageRow, ProviderUsageRow, chart_with_focus};
+use crate::analytics::model_stats::{UsageRow, chart_with_focus};
 use crate::ui::theme::Theme;
 use crate::ui::widgets::common::{metric_line, truncate_label};
 use crate::ui::widgets::linechart::build_chart;
@@ -186,7 +186,7 @@ pub fn render_models(
     let focused_row = effective_focus.and_then(|i| snapshot.models.get(i));
     let chart_data = chart_with_focus(
         &snapshot.chart,
-        focused_row.map(|row| row.model_id.as_str()),
+        focused_row.map(|row| row.id.as_str()),
     );
     frame.render_widget(build_chart(&chart_data, theme), chart_area);
 
@@ -223,15 +223,15 @@ pub fn render_models(
 }
 
 fn focus_header_line(
-    row: &ModelUsageRow,
+    row: &UsageRow,
     focused_model_index: usize,
-    models: &[ModelUsageRow],
+    models: &[UsageRow],
     theme: &Theme,
 ) -> Line<'static> {
     let total = models.len().max(1);
     Line::from(vec![
         Span::styled(
-            format!("  ● {}", truncate_label(&row.model_id, 26)),
+            format!("  ● {}", truncate_label(&row.id, 26)),
             Style::default().fg(theme.series_color(focused_model_index)),
         ),
         Span::styled(format!("  ({:.2}%)", row.percentage), theme.muted_style()),
@@ -250,7 +250,7 @@ fn focus_header_line(
 fn render_model_detail(
     frame: &mut ratatui::Frame<'_>,
     area: Rect,
-    row: &ModelUsageRow,
+    row: &UsageRow,
     theme: &Theme,
 ) {
     let rows = layout_rows::<5, 2>(area);
@@ -353,7 +353,7 @@ pub fn render_providers(
     let focused_row = effective_focus.and_then(|i| snapshot.providers.get(i));
     let chart_data = chart_with_focus(
         &snapshot.provider_chart,
-        focused_row.map(|row| row.provider_id.as_str()),
+        focused_row.map(|row| row.id.as_str()),
     );
     frame.render_widget(build_chart(&chart_data, theme), chart_area);
 
@@ -390,15 +390,15 @@ pub fn render_providers(
 }
 
 fn focus_provider_line(
-    row: &ProviderUsageRow,
+    row: &UsageRow,
     focused_provider_index: usize,
-    providers: &[ProviderUsageRow],
+    providers: &[UsageRow],
     theme: &Theme,
 ) -> Line<'static> {
     let total = providers.len().max(1);
     Line::from(vec![
         Span::styled(
-            format!("  ● {}", truncate_label(&row.provider_id, 26)),
+            format!("  ● {}", truncate_label(&row.id, 26)),
             Style::default().fg(theme.series_color(focused_provider_index)),
         ),
         Span::styled(format!("  ({:.2}%)", row.percentage), theme.muted_style()),
@@ -417,7 +417,7 @@ fn focus_provider_line(
 fn render_provider_detail(
     frame: &mut ratatui::Frame<'_>,
     area: Rect,
-    row: &ProviderUsageRow,
+    row: &UsageRow,
     theme: &Theme,
 ) {
     let rows = layout_rows::<5, 2>(area);
@@ -492,36 +492,13 @@ fn render_provider_detail(
     );
 }
 
-trait SearchItem {
-    fn item_id(&self) -> &str;
-    fn item_pct(&self) -> f64;
-}
-
-impl SearchItem for ModelUsageRow {
-    fn item_id(&self) -> &str {
-        &self.model_id
-    }
-    fn item_pct(&self) -> f64 {
-        self.percentage
-    }
-}
-
-impl SearchItem for ProviderUsageRow {
-    fn item_id(&self) -> &str {
-        &self.provider_id
-    }
-    fn item_pct(&self) -> f64 {
-        self.percentage
-    }
-}
-
-fn render_search_overlay<T: SearchItem>(
+fn render_search_overlay(
     frame: &mut ratatui::Frame<'_>,
     header_area: Rect,
     spacer_area: Rect,
     detail_area: Rect,
     search: &SearchState,
-    items: &[T],
+    items: &[UsageRow],
     theme: &Theme,
 ) {
     let filtered_total = search.filtered_indices.len();
@@ -576,8 +553,8 @@ fn render_search_overlay<T: SearchItem>(
         if line < visible_slice.len() {
             let real_idx = visible_slice[line];
             let item = &items[real_idx];
-            let id = item.item_id();
-            let pct = item.item_pct();
+            let id = item.id.as_str();
+            let pct = item.percentage;
             let is_selected = (visible_start + line) == search.selected;
 
             let indicator_style = if is_selected {

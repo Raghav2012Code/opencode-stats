@@ -7,7 +7,7 @@ use chrono::NaiveDate;
 
 use crate::analytics::heatmap_data::{HeatmapData, build_heatmap_data};
 use crate::analytics::model_stats::{
-    ModelChartData, ModelUsageRow, ProviderUsageRow, build_model_chart, build_provider_chart,
+    ModelChartData, UsageRow, build_model_chart, build_provider_chart,
 };
 use crate::cache::models_cache::PricingCatalog;
 use crate::db::models::{AppData, MessageRecord, UsageEvent};
@@ -32,9 +32,9 @@ pub struct OverviewStats {
 #[derive(Clone, Debug)]
 pub struct AnalyticsSnapshot {
     pub overview: OverviewStats,
-    pub models: Vec<ModelUsageRow>,
+    pub models: Vec<UsageRow>,
     pub chart: ModelChartData,
-    pub providers: Vec<ProviderUsageRow>,
+    pub providers: Vec<UsageRow>,
     pub provider_chart: ModelChartData,
     pub heatmap: HeatmapData,
 }

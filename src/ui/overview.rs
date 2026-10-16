@@ -45,7 +45,7 @@ pub fn render_overview(
     let favorite_model = snapshot
         .models
         .first()
-        .map(|row| row.model_id.clone())
+        .map(|row| row.id.clone())
         .unwrap_or_else(|| "n/a".to_string());
     frame.render_widget(
         Paragraph::new(Line::from(vec![

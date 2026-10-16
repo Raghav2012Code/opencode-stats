@@ -435,7 +435,7 @@ impl App {
                 self.snapshot
                     .models
                     .iter()
-                    .map(|m| m.model_id.clone())
+                    .map(|row| row.id.clone())
                     .collect::<Vec<_>>(),
                 self.focused_model_index,
             ),
@@ -443,7 +443,7 @@ impl App {
                 self.snapshot
                     .providers
                     .iter()
-                    .map(|p| p.provider_id.clone())
+                    .map(|row| row.id.clone())
                     .collect::<Vec<_>>(),
                 self.focused_provider_index,
             ),
@@ -537,7 +537,7 @@ impl App {
                 .map(|row| {
                     format!(
                         "{}: {} tokens ({:.2}%)",
-                        row.model_id, row.total_tokens, row.percentage
+                        row.id, row.total_tokens, row.percentage
                     )
                 })
                 .collect::<Vec<_>>()
@@ -550,7 +550,7 @@ impl App {
                 .map(|row| {
                     format!(
                         "{}: {} tokens ({:.2}%)",
-                        row.provider_id, row.total_tokens, row.percentage
+                        row.id, row.total_tokens, row.percentage
                     )
                 })
                 .collect::<Vec<_>>()
