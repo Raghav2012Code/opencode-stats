@@ -58,3 +58,6 @@ $RECYCLE.BIN/
 
 # Windows shortcuts
 *.lnk
+
+# Local tooling artifacts (OpenChamber screenshots run from this checkout)
+.openchamber/
