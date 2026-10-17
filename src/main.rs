@@ -105,7 +105,26 @@ enum Command {
         range: TimeRange,
         #[arg(long = "format", value_enum, default_value_t = StatsFormat::Line)]
         format: StatsFormat,
+        #[arg(
+            long = "out",
+            value_name = "PATH",
+            help = "Write the output to this file instead of stdout"
+        )]
+        out: Option<PathBuf>,
     },
+}
+
+/// The bytes a `stats` run produces: identical whether they go to a file or to stdout.
+fn stats_content(
+    format: StatsFormat,
+    snapshot: &crate::analytics::AnalyticsSnapshot,
+    range: TimeRange,
+) -> color_eyre::eyre::Result<String> {
+    Ok(match format {
+        StatsFormat::Line => format!("{}\n", format_stats_line(snapshot, range)),
+        StatsFormat::Json => format!("{}\n", serde_json::to_string(&stats_json(snapshot, range))?),
+        StatsFormat::Csv => stats_csv(snapshot, range),
+    })
 }
 
 fn parse_stats_range(value: &str) -> std::result::Result<TimeRange, String> {
@@ -130,9 +149,16 @@ async fn run_command(
     ignore_zero: bool,
 ) -> Result<()> {
     match command {
-        Command::Stats { range, format } => {
-            let data = load_app_data(&InputOptions { database_path })
-                .wrap_err("failed to load OpenCode usage data")?;
+        Command::Stats { range, format, out } => {
+            // The stats surface is meant for scripts: one line on stderr naming the
+            // failure, and a non-zero exit, rather than a multi-line report.
+            let data = match load_app_data(&InputOptions { database_path }) {
+                Ok(data) => data,
+                Err(err) => {
+                    eprintln!("error: {err}");
+                    std::process::exit(1);
+                }
+            };
             let pricing = PricingCatalog::load().wrap_err("failed to load pricing catalog")?;
             let snapshot = build_snapshot(
                 &data,
@@ -140,14 +166,29 @@ async fn run_command(
                 range,
                 ZeroCostBehavior::from_ignore_zero(ignore_zero),
             );
-            match format {
-                StatsFormat::Line => println!("{}", format_stats_line(&snapshot, range)),
-                StatsFormat::Json => {
-                    println!("{}", serde_json::to_string(&stats_json(&snapshot, range))?)
+            let content = match stats_content(format, &snapshot, range) {
+                Ok(content) => content,
+                Err(err) => {
+                    eprintln!("error: {err}");
+                    std::process::exit(1);
                 }
-                StatsFormat::Csv => print!("{}", stats_csv(&snapshot, range)),
+            };
+            match out {
+                Some(path) => match std::fs::write(&path, &content) {
+                    Ok(()) => {
+                        println!("{}", path.display());
+                        Ok(())
+                    }
+                    Err(err) => {
+                        eprintln!("error: could not write {}: {err}", path.display());
+                        std::process::exit(1);
+                    }
+                },
+                None => {
+                    print!("{content}");
+                    Ok(())
+                }
             }
-            Ok(())
         }
         Command::Cache { action } => match action {
             CacheCommand::Path => {
@@ -239,10 +280,93 @@ fn resolve_theme(cli_theme: Option<ThemeMode>) -> Result<(ThemeKind, Theme)> {
 mod tests {
     use color_eyre::eyre::{Result, eyre};
 
-    use super::finalize_cache_update;
+    use super::{finalize_cache_update, stats_content};
+    use crate::analytics::build_snapshot;
     use crate::cache::models_cache::{PricingAvailability, PricingCatalog};
+    use crate::db::models::{AppData, ImportStats};
+    use crate::stats_output::{StatsFormat, format_stats_line, stats_csv, stats_json};
+    use crate::utils::pricing::ZeroCostBehavior;
+    use crate::utils::time::TimeRange;
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
+
+    fn empty_snapshot() -> crate::analytics::AnalyticsSnapshot {
+        let data = AppData {
+            events: Vec::new(),
+            messages: Vec::new(),
+            session_records: Vec::new(),
+            import_stats: ImportStats::default(),
+        };
+        build_snapshot(
+            &data,
+            &test_catalog(PricingAvailability::Empty),
+            TimeRange::All,
+            ZeroCostBehavior::KeepZero,
+        )
+    }
+
+    #[test]
+    fn stats_content_matches_the_serializers() {
+        let snapshot = empty_snapshot();
+
+        assert_eq!(
+            stats_content(StatsFormat::Line, &snapshot, TimeRange::All).unwrap(),
+            format!("{}\n", format_stats_line(&snapshot, TimeRange::All)),
+        );
+        assert_eq!(
+            stats_content(StatsFormat::Json, &snapshot, TimeRange::All).unwrap(),
+            format!(
+                "{}\n",
+                serde_json::to_string(&stats_json(&snapshot, TimeRange::All)).unwrap()
+            ),
+        );
+        // CSV carries its own trailing newline, so nothing extra is added.
+        assert_eq!(
+            stats_content(StatsFormat::Csv, &snapshot, TimeRange::All).unwrap(),
+            stats_csv(&snapshot, TimeRange::All),
+        );
+    }
+
+    #[test]
+    fn the_written_file_holds_exactly_what_stdout_would() {
+        let snapshot = empty_snapshot();
+        let dir = std::env::temp_dir().join(format!(
+            "oc-stats-out-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        for (format, name) in [
+            (StatsFormat::Line, "stats.txt"),
+            (StatsFormat::Json, "stats.json"),
+            (StatsFormat::Csv, "stats.csv"),
+        ] {
+            let content = stats_content(format, &snapshot, TimeRange::All).unwrap();
+            let path = dir.join(name);
+            std::fs::write(&path, &content).unwrap();
+
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+        }
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn writing_into_a_missing_directory_fails_instead_of_inventing_it() {
+        let missing = std::env::temp_dir()
+            .join("oc-stats-absent-dir")
+            .join("nested")
+            .join("stats.txt");
+
+        assert!(
+            std::fs::write(&missing, "x").is_err(),
+            "a missing parent must be an error, not a silent mkdir"
+        );
+        assert!(!missing.parent().unwrap().exists());
+    }
 
     fn test_catalog(availability: PricingAvailability) -> PricingCatalog {
         PricingCatalog {

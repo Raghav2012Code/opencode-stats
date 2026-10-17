@@ -132,7 +132,9 @@ oc-stats stats --range 7d --format json
 oc-stats stats --range 30d --format csv
 ```
 
-Ranges are `all`, `today`, `7d` and `30d`. The line format is stable `key=value` pairs; JSON carries the overview, model rows, provider rows and the heatmap window with exact decimal costs; CSV opens directly in a spreadsheet. Output is plain text with no terminal codes, so it stays pipeable, and a missing database exits non-zero instead of reporting zeros.
+Ranges are `all`, `today`, `7d` and `30d`. The line format is stable `key=value` pairs; JSON carries the overview, model rows, provider rows, session rows and the heatmap window with exact decimal costs; CSV opens directly in a spreadsheet. Output is plain text with no terminal codes, so it stays pipeable, and a missing database exits non-zero instead of reporting zeros.
+
+Add `--out <PATH>` to write the output to a file instead of stdout; the written path is echoed so a script can chain on it. The file holds exactly the bytes stdout would have produced.
 
 ### Cache management commands
 

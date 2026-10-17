@@ -25,7 +25,7 @@ struct SessionRow {
 
 pub fn load_app_data(options: &InputOptions) -> Result<AppData> {
     let db_path = discover_database_path(options.database_path.as_deref()).ok_or_else(|| {
-        Error::database_not_found(connection::default_database_candidates(
+        Error::database_not_found(connection::database_candidates(
             options.database_path.as_deref(),
         ))
     })?;
