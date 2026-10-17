@@ -13,6 +13,9 @@ pub enum StatsFormat {
     /// One JSON object (see [`stats_json`]).
     #[value(name = "json")]
     Json,
+    /// CSV rows (see [`stats_csv`]).
+    #[value(name = "csv")]
+    Csv,
 }
 
 /// One stable `key=value` line for the overview of `snapshot`:
@@ -107,9 +110,82 @@ fn usage_row_json(row: &UsageRow) -> serde_json::Value {
     })
 }
 
+/// The same view as [`format_stats_line`] as CSV: one header row plus one row per
+/// overview, model and provider. Every row has the same columns, so the output opens
+/// directly in a spreadsheet:
+///
+/// `range,section,id,tokens,input,output,cache,cost,sessions,messages,prompts,models,active_days,percentage`
+///
+/// Costs are plain decimals and percentages keep two decimals. The `models` column
+/// applies to the overview row only and `percentage` to model and provider rows; the
+/// other is left empty, so every row keeps the same columns. Fields containing a
+/// comma, double quote, carriage return or newline are quoted per RFC 4180, with inner
+/// quotes doubled. The heatmap window is not tabular and lives only in [`stats_json`].
+pub fn stats_csv(snapshot: &AnalyticsSnapshot, range: TimeRange) -> String {
+    let overview = &snapshot.overview;
+    let name = range.cli_name();
+    let mut rows = vec![format!(
+        "{},overview,,{},{},{},{},{},{},{},{},{},{},",
+        name,
+        overview.total_tokens,
+        overview.input_tokens,
+        overview.output_tokens,
+        overview.cache_tokens,
+        overview.total_cost.known,
+        overview.sessions,
+        overview.messages,
+        overview.prompts,
+        overview.models_used,
+        overview.active_days,
+    )];
+    for (section, row) in snapshot
+        .models
+        .iter()
+        .map(|row| ("model", row))
+        .chain(snapshot.providers.iter().map(|row| ("provider", row)))
+    {
+        rows.push(format!(
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{:.2}",
+            name,
+            section,
+            csv_field(&row.id),
+            row.total_tokens,
+            row.input_tokens,
+            row.output_tokens,
+            row.cache_tokens,
+            row.cost.known,
+            row.sessions,
+            row.messages,
+            row.prompts,
+            "",
+            row.active_days,
+            row.percentage,
+        ));
+    }
+
+    let mut output = String::from(
+        "range,section,id,tokens,input,output,cache,cost,sessions,messages,prompts,models,active_days,percentage\n",
+    );
+    for row in rows {
+        output.push_str(&row);
+        output.push('\n');
+    }
+    output
+}
+
+/// One CSV field: quoted with inner quotes doubled when it contains a comma, double
+/// quote, carriage return or newline, verbatim otherwise.
+fn csv_field(value: &str) -> String {
+    if value.contains([',', '"', '\r', '\n']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{StatsFormat, format_stats_line, stats_json};
+    use super::{StatsFormat, csv_field, format_stats_line, stats_csv, stats_json};
     use crate::analytics::heatmap_data::{HeatmapCell, HeatmapData};
     use crate::analytics::model_stats::{ModelChartData, UsageRow};
     use crate::analytics::{AnalyticsSnapshot, OverviewStats};
@@ -241,6 +317,81 @@ mod tests {
     #[test]
     fn default_format_is_line() {
         assert!(matches!(StatsFormat::default(), StatsFormat::Line));
+    }
+
+    #[test]
+    fn csv_field_quotes_only_when_needed() {
+        assert_eq!(csv_field("gpt-5"), "gpt-5");
+        assert_eq!(csv_field(""), "");
+        assert_eq!(csv_field("a,b"), "\"a,b\"");
+        assert_eq!(csv_field("say \"hi\""), "\"say \"\"hi\"\"\"");
+        assert_eq!(csv_field("line one\nline two"), "\"line one\nline two\"");
+        assert_eq!(csv_field("carriage\rreturn"), "\"carriage\rreturn\"");
+        assert_eq!(
+            csv_field("comma, \"quote\" and\nnewline"),
+            "\"comma, \"\"quote\"\" and\nnewline\"",
+        );
+    }
+
+    /// Counts CSV fields per RFC 4180: commas inside double quotes do not separate.
+    fn field_count(line: &str) -> usize {
+        let mut count = 1;
+        let mut quoted = false;
+        let mut chars = line.chars();
+        while let Some(char) = chars.next() {
+            if quoted {
+                if char == '"' {
+                    if chars.clone().next() == Some('"') {
+                        chars.next();
+                    } else {
+                        quoted = false;
+                    }
+                }
+            } else if char == '"' {
+                quoted = true;
+            } else if char == ',' {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    #[test]
+    fn csv_has_a_uniform_header_and_column_counts() {
+        let output = stats_csv(&synthetic_snapshot(), TimeRange::All);
+        let mut lines = output.lines();
+
+        assert_eq!(
+            lines.next().unwrap(),
+            "range,section,id,tokens,input,output,cache,cost,sessions,messages,prompts,models,active_days,percentage",
+        );
+        // Overview + one model + one provider.
+        let body = lines.collect::<Vec<_>>();
+        assert_eq!(body.len(), 3);
+        for line in &body {
+            assert_eq!(field_count(line), 14, "uniform columns: {line}");
+        }
+    }
+
+    #[test]
+    fn csv_reports_the_full_view_with_quoted_names() {
+        let mut snapshot = synthetic_snapshot();
+        snapshot.models = vec![row(
+            "acme, \"quoted\"\nmodel",
+            130,
+            rust_decimal::Decimal::new(123, 2),
+        )];
+        let output = stats_csv(&snapshot, TimeRange::Today);
+
+        assert!(output.starts_with("range,section,id,"));
+        assert!(output.contains("today,overview,,130,100,20,10,1.23,2,5,2,1,1,"));
+        assert!(output.contains(
+            "today,model,\"acme, \"\"quoted\"\"\nmodel\",130,100,20,10,1.23,2,4,1,,1,75.00"
+        ));
+        assert!(output.contains(
+            "today,provider,\"acme \"\"quoted\"\" provider\",130,100,20,10,1.23,2,4,1,,1,75.00"
+        ));
+        assert!(output.ends_with('\n'));
     }
 
     #[test]
