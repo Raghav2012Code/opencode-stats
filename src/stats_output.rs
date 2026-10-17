@@ -1,5 +1,5 @@
 use crate::analytics::AnalyticsSnapshot;
-use crate::analytics::model_stats::UsageRow;
+use crate::analytics::model_stats::{SessionUsageRow, UsageRow};
 use crate::utils::pricing::PriceSummary;
 use crate::utils::time::TimeRange;
 
@@ -70,6 +70,7 @@ pub fn stats_json(snapshot: &AnalyticsSnapshot, range: TimeRange) -> serde_json:
         },
         "models": snapshot.models.iter().map(usage_row_json).collect::<Vec<_>>(),
         "providers": snapshot.providers.iter().map(usage_row_json).collect::<Vec<_>>(),
+        "sessions": snapshot.sessions.iter().map(session_row_json).collect::<Vec<_>>(),
         "heatmap": {
             "weeks": snapshot.heatmap.weeks.iter().map(|week| {
                 week.iter().map(|cell| {
@@ -110,22 +111,42 @@ fn usage_row_json(row: &UsageRow) -> serde_json::Value {
     })
 }
 
+fn session_row_json(row: &SessionUsageRow) -> serde_json::Value {
+    serde_json::json!({
+        "id": row.id,
+        "title": row.title,
+        "project": row.project,
+        "is_subagent": row.is_subagent,
+        "tokens": row.total_tokens,
+        "input": row.input_tokens,
+        "output": row.output_tokens,
+        "cache": row.cache_tokens,
+        "cost": price_json(&row.cost),
+        "messages": row.messages,
+        "prompts": row.prompts,
+        "active_days": row.active_days,
+        "elapsed_secs": row.elapsed_secs(),
+        "percentage": row.percentage,
+    })
+}
+
 /// The same view as [`format_stats_line`] as CSV: one header row plus one row per
 /// overview, model and provider. Every row has the same columns, so the output opens
 /// directly in a spreadsheet:
 ///
-/// `range,section,id,tokens,input,output,cache,cost,sessions,messages,prompts,models,active_days,percentage`
+/// `range,section,id,title,tokens,input,output,cache,cost,sessions,messages,prompts,models,active_days,percentage`
 ///
 /// Costs are plain decimals and percentages keep two decimals. The `models` column
-/// applies to the overview row only and `percentage` to model and provider rows; the
-/// other is left empty, so every row keeps the same columns. Fields containing a
-/// comma, double quote, carriage return or newline are quoted per RFC 4180, with inner
-/// quotes doubled. The heatmap window is not tabular and lives only in [`stats_json`].
+/// applies to the overview row only, `title` to session rows and `percentage` to model,
+/// provider and session rows; the others stay empty so every row keeps the same columns.
+/// Fields containing a comma, double quote, carriage return or newline are quoted per
+/// RFC 4180, with inner quotes doubled. The heatmap window is not tabular and lives
+/// only in [`stats_json`].
 pub fn stats_csv(snapshot: &AnalyticsSnapshot, range: TimeRange) -> String {
     let overview = &snapshot.overview;
     let name = range.cli_name();
     let mut rows = vec![format!(
-        "{},overview,,{},{},{},{},{},{},{},{},{},{},",
+        "{},overview,,,{},{},{},{},{},{},{},{},{},{},",
         name,
         overview.total_tokens,
         overview.input_tokens,
@@ -138,33 +159,59 @@ pub fn stats_csv(snapshot: &AnalyticsSnapshot, range: TimeRange) -> String {
         overview.models_used,
         overview.active_days,
     )];
-    for (section, row) in snapshot
+    for (section, id, title, row) in snapshot
         .models
         .iter()
-        .map(|row| ("model", row))
-        .chain(snapshot.providers.iter().map(|row| ("provider", row)))
+        .map(|row| ("model", row.id.as_str(), "", row))
+        .chain(
+            snapshot
+                .providers
+                .iter()
+                .map(|row| ("provider", row.id.as_str(), "", row)),
+        )
     {
-        rows.push(format!(
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{:.2}",
-            name,
-            section,
+        let fields = vec![
+            name.to_string(),
+            section.to_string(),
+            csv_field(id),
+            csv_field(title),
+            row.total_tokens.to_string(),
+            row.input_tokens.to_string(),
+            row.output_tokens.to_string(),
+            row.cache_tokens.to_string(),
+            row.cost.known.to_string(),
+            row.sessions.to_string(),
+            row.messages.to_string(),
+            row.prompts.to_string(),
+            String::new(),
+            row.active_days.to_string(),
+            format!("{:.2}", row.percentage),
+        ];
+        rows.push(fields.join(","));
+    }
+    for row in &snapshot.sessions {
+        let fields = vec![
+            name.to_string(),
+            "session".to_string(),
             csv_field(&row.id),
-            row.total_tokens,
-            row.input_tokens,
-            row.output_tokens,
-            row.cache_tokens,
-            row.cost.known,
-            row.sessions,
-            row.messages,
-            row.prompts,
-            "",
-            row.active_days,
-            row.percentage,
-        ));
+            csv_field(&row.title),
+            row.total_tokens.to_string(),
+            row.input_tokens.to_string(),
+            row.output_tokens.to_string(),
+            row.cache_tokens.to_string(),
+            row.cost.known.to_string(),
+            String::new(),
+            row.messages.to_string(),
+            row.prompts.to_string(),
+            String::new(),
+            row.active_days.to_string(),
+            format!("{:.2}", row.percentage),
+        ];
+        rows.push(fields.join(","));
     }
 
     let mut output = String::from(
-        "range,section,id,tokens,input,output,cache,cost,sessions,messages,prompts,models,active_days,percentage\n",
+        "range,section,id,title,tokens,input,output,cache,cost,sessions,messages,prompts,models,active_days,percentage\n",
     );
     for row in rows {
         output.push_str(&row);
@@ -187,7 +234,7 @@ fn csv_field(value: &str) -> String {
 mod tests {
     use super::{StatsFormat, csv_field, format_stats_line, stats_csv, stats_json};
     use crate::analytics::heatmap_data::{HeatmapCell, HeatmapData};
-    use crate::analytics::model_stats::{ModelChartData, UsageRow};
+    use crate::analytics::model_stats::{ModelChartData, SessionUsageRow, UsageRow};
     use crate::analytics::{AnalyticsSnapshot, OverviewStats};
     use crate::utils::pricing::PriceSummary;
     use crate::utils::time::TimeRange;
@@ -214,6 +261,26 @@ mod tests {
             cost: price(known),
             percentage: 75.0,
             p50_output_tokens_per_second: 0.0,
+        }
+    }
+
+    fn session_row(id: &str, title: &str) -> SessionUsageRow {
+        SessionUsageRow {
+            id: id.to_string(),
+            title: title.to_string(),
+            project: "demo".to_string(),
+            is_subagent: false,
+            total_tokens: 130,
+            input_tokens: 100,
+            output_tokens: 20,
+            cache_tokens: 10,
+            messages: 4,
+            prompts: 1,
+            active_days: 1,
+            cost: price(rust_decimal::Decimal::new(123, 2)),
+            first_activity: None,
+            last_activity: None,
+            percentage: 75.0,
         }
     }
 
@@ -260,6 +327,7 @@ mod tests {
                 y_labels: Vec::new(),
                 series: Vec::new(),
             },
+            sessions: Vec::new(),
             heatmap: HeatmapData {
                 weeks: vec![vec![
                     HeatmapCell {
@@ -363,13 +431,13 @@ mod tests {
 
         assert_eq!(
             lines.next().unwrap(),
-            "range,section,id,tokens,input,output,cache,cost,sessions,messages,prompts,models,active_days,percentage",
+            "range,section,id,title,tokens,input,output,cache,cost,sessions,messages,prompts,models,active_days,percentage",
         );
         // Overview + one model + one provider.
         let body = lines.collect::<Vec<_>>();
         assert_eq!(body.len(), 3);
         for line in &body {
-            assert_eq!(field_count(line), 14, "uniform columns: {line}");
+            assert_eq!(field_count(line), 15, "uniform columns: {line}");
         }
     }
 
@@ -383,15 +451,37 @@ mod tests {
         )];
         let output = stats_csv(&snapshot, TimeRange::Today);
 
-        assert!(output.starts_with("range,section,id,"));
-        assert!(output.contains("today,overview,,130,100,20,10,1.23,2,5,2,1,1,"));
+        assert!(output.starts_with("range,section,id,title,"));
+        assert!(output.contains("today,overview,,,130,100,20,10,1.23,2,5,2,1,1,"));
         assert!(output.contains(
-            "today,model,\"acme, \"\"quoted\"\"\nmodel\",130,100,20,10,1.23,2,4,1,,1,75.00"
+            "today,model,\"acme, \"\"quoted\"\"\nmodel\",,130,100,20,10,1.23,2,4,1,,1,75.00"
         ));
         assert!(output.contains(
-            "today,provider,\"acme \"\"quoted\"\" provider\",130,100,20,10,1.23,2,4,1,,1,75.00"
+            "today,provider,\"acme \"\"quoted\"\" provider\",,130,100,20,10,1.23,2,4,1,,1,75.00"
         ));
         assert!(output.ends_with('\n'));
+    }
+
+    #[test]
+    fn sessions_appear_in_both_serializers() {
+        let mut snapshot = synthetic_snapshot();
+        snapshot.sessions = vec![session_row("ses_1", "Big, \"quoted\" job")];
+        let value = stats_json(&snapshot, TimeRange::Today);
+
+        assert_eq!(value["sessions"].as_array().unwrap().len(), 1);
+        assert_eq!(value["sessions"][0]["id"], "ses_1");
+        assert_eq!(value["sessions"][0]["title"], "Big, \"quoted\" job");
+        assert_eq!(value["sessions"][0]["project"], "demo");
+        assert_eq!(value["sessions"][0]["is_subagent"], false);
+        assert_eq!(value["sessions"][0]["messages"], 4);
+
+        let output = stats_csv(&snapshot, TimeRange::Today);
+        assert!(output.contains(
+            "today,session,ses_1,\"Big, \"\"quoted\"\" job\",130,100,20,10,1.23,,4,1,,1,75.00"
+        ));
+        for line in output.lines().skip(1) {
+            assert_eq!(field_count(line), 15, "uniform columns: {line}");
+        }
     }
 
     #[test]

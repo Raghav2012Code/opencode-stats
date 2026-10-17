@@ -7,7 +7,8 @@ use chrono::NaiveDate;
 
 use crate::analytics::heatmap_data::{HeatmapData, build_heatmap_data};
 use crate::analytics::model_stats::{
-    ModelChartData, UsageRow, build_model_chart, build_provider_chart,
+    ModelChartData, SessionUsageRow, UsageRow, build_model_chart, build_provider_chart,
+    build_session_rows,
 };
 use crate::cache::models_cache::PricingCatalog;
 use crate::db::models::{AppData, MessageRecord, UsageEvent};
@@ -36,6 +37,7 @@ pub struct AnalyticsSnapshot {
     pub chart: ModelChartData,
     pub providers: Vec<UsageRow>,
     pub provider_chart: ModelChartData,
+    pub sessions: Vec<SessionUsageRow>,
     pub heatmap: HeatmapData,
 }
 
@@ -134,6 +136,12 @@ pub fn build_snapshot(
         chart,
         providers,
         provider_chart,
+        sessions: build_session_rows(
+            &filtered_events,
+            &filtered_messages,
+            pricing,
+            zero_cost_behavior,
+        ),
         heatmap,
     }
 }

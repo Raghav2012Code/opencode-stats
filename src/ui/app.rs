@@ -21,7 +21,7 @@ use crate::db::queries::load_app_data;
 use crate::stats_output::{stats_csv, stats_json};
 use crate::ui::export::render_share_card;
 use crate::ui::models::MAX_QUERY_LEN;
-use crate::ui::models::{SearchState, render_models, render_providers};
+use crate::ui::models::{SearchState, render_models, render_providers, render_sessions};
 use crate::ui::overview::render_overview;
 use crate::ui::theme::{Theme, ThemeKind};
 use crate::ui::widgets::common::{CONTENT_WIDTH, left_aligned_content, segment_span};
@@ -54,6 +54,7 @@ pub enum Page {
     Overview,
     Models,
     Providers,
+    Sessions,
 }
 
 impl Page {
@@ -61,15 +62,17 @@ impl Page {
         match self {
             Self::Overview => Self::Models,
             Self::Models => Self::Providers,
-            Self::Providers => Self::Overview,
+            Self::Providers => Self::Sessions,
+            Self::Sessions => Self::Overview,
         }
     }
 
     pub fn previous(self) -> Self {
         match self {
-            Self::Overview => Self::Providers,
+            Self::Overview => Self::Sessions,
             Self::Models => Self::Overview,
             Self::Providers => Self::Models,
+            Self::Sessions => Self::Providers,
         }
     }
 }
@@ -288,6 +291,14 @@ impl App {
                 self.search.as_ref(),
                 theme,
             ),
+            Page::Sessions => render_sessions(
+                frame,
+                body,
+                &self.snapshot.sessions,
+                self.focused_index,
+                self.search.as_ref(),
+                theme,
+            ),
         }
 
         self.render_footer(frame, footer, theme);
@@ -299,6 +310,7 @@ impl App {
             segment_span("Overview", self.page == Page::Overview, theme),
             segment_span("Models", self.page == Page::Models, theme),
             segment_span("Providers", self.page == Page::Providers, theme),
+            segment_span("Sessions", self.page == Page::Sessions, theme),
             ratatui::text::Span::raw("    "),
             segment_span(" All ", self.range == TimeRange::All, theme),
             segment_span("Today", self.range == TimeRange::Today, theme),
@@ -397,8 +409,8 @@ impl App {
                 self.page = self.page.previous();
                 self.focused_index = 0;
             }
-            KeyCode::Down | KeyCode::Char('j') => self.advance_focused_model(1),
-            KeyCode::Up | KeyCode::Char('k') => self.advance_focused_model(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.advance_focus(1),
+            KeyCode::Up | KeyCode::Char('k') => self.advance_focus(-1),
             KeyCode::Char('r') => {
                 self.range = self.range.cycle();
                 self.focused_index = 0;
@@ -414,7 +426,7 @@ impl App {
                 self.copy_current_page();
             }
             KeyCode::Char('f') | KeyCode::Char('/')
-                if matches!(self.page, Page::Models | Page::Providers) =>
+                if matches!(self.page, Page::Models | Page::Providers | Page::Sessions) =>
             {
                 self.enter_search();
             }
@@ -431,10 +443,11 @@ impl App {
         }
     }
 
-    fn advance_focused_model(&mut self, delta: isize) {
+    fn advance_focus(&mut self, delta: isize) {
         let total = match self.page {
             Page::Models => self.snapshot.models.len(),
             Page::Providers => self.snapshot.providers.len(),
+            Page::Sessions => self.snapshot.sessions.len(),
             Page::Overview => return,
         };
         if total == 0 {
@@ -445,12 +458,27 @@ impl App {
     }
 
     fn enter_search(&mut self) {
-        let rows = match self.page {
-            Page::Models => &self.snapshot.models,
-            Page::Providers => &self.snapshot.providers,
-            _ => return,
+        let ids = match self.page {
+            Page::Models => self
+                .snapshot
+                .models
+                .iter()
+                .map(|row| row.id.clone())
+                .collect::<Vec<_>>(),
+            Page::Providers => self
+                .snapshot
+                .providers
+                .iter()
+                .map(|row| row.id.clone())
+                .collect::<Vec<_>>(),
+            Page::Sessions => self
+                .snapshot
+                .sessions
+                .iter()
+                .map(|row| row.title.clone())
+                .collect::<Vec<_>>(),
+            Page::Overview => return,
         };
-        let ids = rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>();
         self.search = Some(SearchState::new(ids, self.focused_index));
     }
 
@@ -552,6 +580,21 @@ impl App {
             ),
             Page::Models => summary_lines(&self.snapshot.models),
             Page::Providers => summary_lines(&self.snapshot.providers),
+            Page::Sessions => self
+                .snapshot
+                .sessions
+                .iter()
+                .take(8)
+                .map(|row| {
+                    format!(
+                        "{}: {} tokens ({})",
+                        row.title,
+                        row.total_tokens,
+                        format_price_summary(&row.cost),
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
         }
     }
 }

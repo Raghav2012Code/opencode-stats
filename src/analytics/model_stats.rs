@@ -26,6 +26,35 @@ pub struct UsageRow {
     pub p50_output_tokens_per_second: f64,
 }
 
+/// One aggregated usage row per session. Unlike [`UsageRow`] this carries the identity
+/// a user recognises (title and project) and the span the session covers.
+#[derive(Clone, Debug)]
+pub struct SessionUsageRow {
+    pub id: String,
+    pub title: String,
+    pub project: String,
+    pub is_subagent: bool,
+    pub total_tokens: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_tokens: u64,
+    pub messages: usize,
+    pub prompts: usize,
+    pub active_days: usize,
+    pub cost: PriceSummary,
+    pub first_activity: Option<chrono::DateTime<chrono::Local>>,
+    pub last_activity: Option<chrono::DateTime<chrono::Local>>,
+    pub percentage: f64,
+}
+
+impl SessionUsageRow {
+    /// Whole seconds between first and last activity, if both are known.
+    pub fn elapsed_secs(&self) -> Option<i64> {
+        let (first, last) = (self.first_activity?, self.last_activity?);
+        Some(last.signed_duration_since(first).num_seconds().max(0))
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ModelChartSeries {
     pub model_id: String,
@@ -169,6 +198,114 @@ fn build_rows(
         .collect::<Vec<_>>();
 
     rows.sort_by_key(|right| std::cmp::Reverse(right.total_tokens));
+
+    rows
+}
+
+/// One row per session in `events`, ordered by cost descending. Message and prompt
+/// counts come from `messages` (all roles, not just ones with a model attached), so a
+/// session with usage but no prompts still appears.
+pub fn build_session_rows(
+    events: &[&UsageEvent],
+    messages: &[&MessageRecord],
+    pricing: &PricingCatalog,
+    zero_cost_behavior: ZeroCostBehavior,
+) -> Vec<SessionUsageRow> {
+    #[derive(Default)]
+    struct SessionAccumulator {
+        tokens: TokenUsage,
+        messages: usize,
+        prompts: usize,
+        active_days: BTreeSet<NaiveDate>,
+        cost: PriceSummary,
+        first_activity: Option<chrono::DateTime<chrono::Local>>,
+        last_activity: Option<chrono::DateTime<chrono::Local>>,
+        title: Option<String>,
+        project: Option<String>,
+        is_subagent: bool,
+    }
+
+    let mut grouped = BTreeMap::<String, SessionAccumulator>::new();
+
+    for message in messages {
+        let entry = grouped.entry(message.session_id.clone()).or_default();
+        match message.role.as_deref() {
+            Some("assistant") => entry.messages += 1,
+            Some("user") => entry.prompts += 1,
+            _ => {}
+        }
+    }
+
+    for event in events {
+        let event = *event;
+        let entry = grouped.entry(event.session_id.clone()).or_default();
+        entry.tokens.add_assign(&event.tokens);
+        update_price_summary(&mut entry.cost, pricing, event, zero_cost_behavior);
+        if let Some(date) = event.activity_date() {
+            entry.active_days.insert(date);
+        }
+        for moment in [event.created_at, event.completed_at].into_iter().flatten() {
+            if entry.first_activity.is_none_or(|first| moment < first) {
+                entry.first_activity = Some(moment);
+            }
+            if entry.last_activity.is_none_or(|last| moment > last) {
+                entry.last_activity = Some(moment);
+            }
+        }
+        if entry.title.is_none() {
+            entry.title = event.session_title.clone();
+        }
+        if entry.project.is_none() {
+            entry.project = event
+                .project_path
+                .as_deref()
+                .and_then(std::path::Path::file_name)
+                .and_then(|name| name.to_str())
+                .map(ToOwned::to_owned)
+                .or_else(|| event.project_name.clone());
+        }
+        entry.is_subagent |= event.parent_session_id.is_some();
+    }
+
+    let overall_tokens = grouped
+        .values()
+        .map(|row| row.tokens.total())
+        .fold(0u64, |total, value| total.saturating_add(value));
+    let mut rows = grouped
+        .into_iter()
+        .map(|(id, row)| {
+            let title = row
+                .title
+                .filter(|title| !title.trim().is_empty())
+                .unwrap_or_else(|| format!("Session {}", id.chars().take(8).collect::<String>()));
+            SessionUsageRow {
+                id,
+                title,
+                project: row.project.unwrap_or_else(|| "Unknown project".to_string()),
+                is_subagent: row.is_subagent,
+                total_tokens: row.tokens.total(),
+                input_tokens: row.tokens.input,
+                output_tokens: row.tokens.output,
+                cache_tokens: row.tokens.cache_read.saturating_add(row.tokens.cache_write),
+                messages: row.messages,
+                prompts: row.prompts,
+                active_days: row.active_days.len(),
+                cost: row.cost,
+                first_activity: row.first_activity,
+                last_activity: row.last_activity,
+                percentage: percentage(row.tokens.total(), overall_tokens),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    rows.sort_by(|left, right| {
+        right
+            .cost
+            .known
+            .cmp(&left.cost.known)
+            .then_with(|| right.total_tokens.cmp(&left.total_tokens))
+            .then_with(|| left.id.cmp(&right.id))
+    });
 
     rows
 }
@@ -494,6 +631,127 @@ mod tests {
         assert_eq!(model_chart.series[0].model_id, "gpt-5");
         assert_eq!(provider_chart.series.len(), 1);
         assert_eq!(provider_chart.series[0].model_id, "openai");
+    }
+
+    fn session_event(
+        session_id: &str,
+        parent_session_id: Option<&str>,
+        title: Option<&str>,
+        project: Option<&str>,
+        input_tokens: u64,
+        cost_cents: i64,
+    ) -> UsageEvent {
+        let base = usage_event("openai", "gpt-5", 12);
+        UsageEvent {
+            session_id: session_id.to_string(),
+            parent_session_id: parent_session_id.map(ToOwned::to_owned),
+            session_title: title.map(ToOwned::to_owned),
+            project_name: project.map(ToOwned::to_owned),
+            tokens: TokenUsage {
+                input: input_tokens,
+                ..base.tokens
+            },
+            stored_cost_usd: Some(rust_decimal::Decimal::new(cost_cents, 2)),
+            ..base
+        }
+    }
+
+    fn session_message(session_id: &str, role: &str) -> MessageRecord {
+        MessageRecord {
+            session_id: session_id.to_string(),
+            role: Some(role.to_string()),
+            provider_id: Some("openai".to_string()),
+            model_id: Some("gpt-5".to_string()),
+            created_at: None,
+        }
+    }
+
+    #[test]
+    fn sessions_order_by_cost_and_carry_identity() {
+        let cheap = session_event("ses_cheap", None, Some("Cheap chat"), Some("demo"), 10, 10);
+        let big = session_event(
+            "ses_big",
+            Some("ses_1"),
+            Some("Big job"),
+            Some("demo"),
+            20,
+            500,
+        );
+        let events = [cheap, big];
+        let m1 = session_message("ses_cheap", "user");
+        let m2 = session_message("ses_cheap", "assistant");
+        let m3 = session_message("ses_big", "assistant");
+        let messages = [m1, m2, m3];
+        let borrowed_events = [&events[0], &events[1]];
+        let borrowed_messages = [&messages[0], &messages[1], &messages[2]];
+
+        let rows = super::build_session_rows(
+            &borrowed_events,
+            &borrowed_messages,
+            &empty_pricing(),
+            ZeroCostBehavior::KeepZero,
+        );
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, "ses_big");
+        assert_eq!(rows[0].title, "Big job");
+        assert_eq!(rows[0].project, "demo");
+        assert!(rows[0].is_subagent);
+        assert_eq!(rows[0].messages, 1);
+        assert_eq!(rows[0].prompts, 0);
+        assert_eq!(rows[1].id, "ses_cheap");
+        assert!(!rows[1].is_subagent);
+        assert_eq!(rows[1].messages, 1);
+        assert_eq!(rows[1].prompts, 1);
+        assert!(rows[0].percentage > rows[1].percentage);
+    }
+
+    #[test]
+    fn session_without_prompts_still_appears() {
+        let quiet = session_event("ses_quiet", None, None, None, 5, 7);
+        let only = session_message("ses_quiet", "assistant");
+        let borrowed_events = [&quiet];
+        let borrowed_messages = [&only];
+
+        let rows = super::build_session_rows(
+            &borrowed_events,
+            &borrowed_messages,
+            &empty_pricing(),
+            ZeroCostBehavior::KeepZero,
+        );
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].prompts, 0);
+        assert_eq!(rows[0].messages, 1);
+        assert_eq!(rows[0].project, "Unknown project");
+        assert!(rows[0].title.starts_with("Session "));
+    }
+
+    #[test]
+    fn session_span_covers_first_to_last_activity() {
+        let morning = UsageEvent {
+            created_at: Local.with_ymd_and_hms(2026, 3, 12, 9, 0, 0).single(),
+            completed_at: Local.with_ymd_and_hms(2026, 3, 12, 9, 0, 0).single(),
+            ..session_event("ses_long", None, None, None, 5, 7)
+        };
+        let evening = UsageEvent {
+            created_at: Local.with_ymd_and_hms(2026, 3, 12, 12, 30, 0).single(),
+            completed_at: Local.with_ymd_and_hms(2026, 3, 12, 12, 30, 0).single(),
+            ..session_event("ses_long", None, None, None, 5, 7)
+        };
+        let borrowed = [&evening, &morning];
+        let no_messages: Vec<&MessageRecord> = Vec::new();
+
+        let rows = super::build_session_rows(
+            &borrowed,
+            &no_messages,
+            &empty_pricing(),
+            ZeroCostBehavior::KeepZero,
+        );
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].elapsed_secs(), Some(3 * 3_600 + 30 * 60));
+        assert!(rows[0].first_activity < rows[0].last_activity);
     }
 
     #[test]

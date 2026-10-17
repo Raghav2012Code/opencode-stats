@@ -122,6 +122,18 @@ By default, `oc-stats` keeps stored costs as-is, including `cost: 0`, to preserv
 oc-stats --ignore-zero
 ```
 
+### Scriptable stats
+
+Print what the dashboard shows, for scripts and statuslines. Same numbers as the TUI, one line by default:
+
+```bash
+oc-stats stats --range today --format line
+oc-stats stats --range 7d --format json
+oc-stats stats --range 30d --format csv
+```
+
+Ranges are `all`, `today`, `7d` and `30d`. The line format is stable `key=value` pairs; JSON carries the overview, model rows, provider rows and the heatmap window with exact decimal costs; CSV opens directly in a spreadsheet. Output is plain text with no terminal codes, so it stays pipeable, and a missing database exits non-zero instead of reporting zeros.
+
 ### Cache management commands
 
 View the local pricing cache path:

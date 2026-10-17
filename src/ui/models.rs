@@ -7,11 +7,11 @@ use ratatui::widgets::Paragraph;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::analytics::AnalyticsSnapshot;
-use crate::analytics::model_stats::{ModelChartData, UsageRow, chart_with_focus};
+use crate::analytics::model_stats::{ModelChartData, SessionUsageRow, UsageRow, chart_with_focus};
 use crate::ui::theme::Theme;
 use crate::ui::widgets::common::{metric_line, truncate_label};
 use crate::ui::widgets::linechart::build_chart;
-use crate::utils::formatting::{format_price_summary, format_tokens};
+use crate::utils::formatting::{format_duration, format_price_summary, format_tokens};
 
 #[derive(Clone, Debug)]
 pub struct SearchState {
@@ -179,6 +179,55 @@ pub fn render_models(
     );
 }
 
+/// What every list page needs from a row: a stable key, a share of the total, the
+/// text search matches against, and the name shown in the header.
+trait ListRow {
+    fn row_id(&self) -> &str;
+    fn row_percentage(&self) -> f64;
+    fn search_text(&self) -> &str;
+    fn display_name(&self) -> String;
+}
+
+impl ListRow for UsageRow {
+    fn row_id(&self) -> &str {
+        &self.id
+    }
+
+    fn row_percentage(&self) -> f64 {
+        self.percentage
+    }
+
+    fn search_text(&self) -> &str {
+        &self.id
+    }
+
+    fn display_name(&self) -> String {
+        self.id.clone()
+    }
+}
+
+impl ListRow for SessionUsageRow {
+    fn row_id(&self) -> &str {
+        &self.id
+    }
+
+    fn row_percentage(&self) -> f64 {
+        self.percentage
+    }
+
+    fn search_text(&self) -> &str {
+        &self.title
+    }
+
+    fn display_name(&self) -> String {
+        if self.is_subagent {
+            format!("◈ {}", self.title)
+        } else {
+            self.title.clone()
+        }
+    }
+}
+
 /// One list page: the rows to show, the chart above them, and what the rows are called
 /// when there are none. This is the only thing the Models and Providers pages differ in.
 struct ListPage<'a> {
@@ -213,7 +262,7 @@ fn render_usage_list(
         .or(Some(focused_index));
 
     let focused_row = effective_focus.and_then(|index| rows.get(index));
-    let chart_data = chart_with_focus(chart, focused_row.map(|row| row.id.as_str()));
+    let chart_data = chart_with_focus(chart, focused_row.map(ListRow::row_id));
     frame.render_widget(build_chart(&chart_data, theme), chart_area);
 
     if let Some(search) = search {
@@ -229,7 +278,7 @@ fn render_usage_list(
         );
     } else if let Some(row) = focused_row {
         frame.render_widget(
-            Paragraph::new(focus_line(row, focused_index, rows, theme)),
+            Paragraph::new(focus_line(row, focused_index, rows.len(), theme)),
             header_area,
         );
         frame.render_widget(Paragraph::new(""), spacer2);
@@ -245,18 +294,21 @@ fn render_usage_list(
 }
 
 fn focus_line(
-    row: &UsageRow,
+    row: &impl ListRow,
     focused_index: usize,
-    rows: &[UsageRow],
+    total_rows: usize,
     theme: &Theme,
 ) -> Line<'static> {
-    let total = rows.len().max(1);
+    let total = total_rows.max(1);
     Line::from(vec![
         Span::styled(
-            format!("  ● {}", truncate_label(&row.id, 26)),
+            format!("  ● {}", truncate_label(&row.display_name(), 26)),
             Style::default().fg(theme.series_color(focused_index)),
         ),
-        Span::styled(format!("  ({:.2}%)", row.percentage), theme.muted_style()),
+        Span::styled(
+            format!("  ({:.2}%)", row.row_percentage()),
+            theme.muted_style(),
+        ),
         Span::styled(" | ", theme.muted_style()),
         Span::styled(
             format!("{}/{}", focused_index.min(total - 1) + 1, total),
@@ -364,13 +416,13 @@ pub fn render_providers(
     );
 }
 
-fn render_search_overlay(
+fn render_search_overlay<R: ListRow>(
     frame: &mut ratatui::Frame<'_>,
     header_area: Rect,
     spacer_area: Rect,
     detail_area: Rect,
     search: &SearchState,
-    items: &[UsageRow],
+    items: &[R],
     theme: &Theme,
 ) {
     let filtered_total = search.filtered_indices.len();
@@ -425,8 +477,8 @@ fn render_search_overlay(
         if line < visible_slice.len() {
             let real_idx = visible_slice[line];
             let item = &items[real_idx];
-            let id = item.id.as_str();
-            let pct = item.percentage;
+            let id = item.search_text();
+            let pct = item.row_percentage();
             let is_selected = (visible_start + line) == search.selected;
 
             let indicator_style = if is_selected {
@@ -495,6 +547,190 @@ fn render_search_overlay(
     }
 }
 
+/// Sessions ranked by cost, most expensive first. The top area lists the leading
+/// rows so the page answers its question at a glance; the detail panel below shows
+/// the focused session. There is no chart: with hundreds of sessions a per-session
+/// series would be noise.
+pub fn render_sessions(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    rows: &[SessionUsageRow],
+    focused_index: usize,
+    search: Option<&SearchState>,
+    theme: &Theme,
+) {
+    let [table_area, spacer1, header_area, spacer2, detail_area, _] = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Fill(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(5),
+            Constraint::Length(1),
+        ])
+        .areas(area);
+
+    let effective_focus: Option<usize> = search
+        .and_then(|s| s.filtered_indices.get(s.selected).copied())
+        .or(Some(focused_index));
+
+    let focused_row = effective_focus.and_then(|index| rows.get(index));
+    render_session_table(frame, table_area, rows, effective_focus, theme);
+
+    if let Some(search) = search {
+        frame.render_widget(Paragraph::new(""), spacer1);
+        render_search_overlay(
+            frame,
+            header_area,
+            spacer2,
+            detail_area,
+            search,
+            rows,
+            theme,
+        );
+    } else if let Some(row) = focused_row {
+        frame.render_widget(
+            Paragraph::new(focus_line(row, focused_index, rows.len(), theme)),
+            header_area,
+        );
+        frame.render_widget(Paragraph::new(""), spacer2);
+        render_session_detail(frame, detail_area, row, theme);
+    } else {
+        frame.render_widget(Paragraph::new(""), spacer2);
+        frame.render_widget(
+            Paragraph::new("No session activity in this time range.").style(theme.muted_style()),
+            detail_area,
+        );
+    }
+}
+
+fn render_session_table(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    rows: &[SessionUsageRow],
+    focused: Option<usize>,
+    theme: &Theme,
+) {
+    for (index, paragraph) in rows
+        .iter()
+        .enumerate()
+        .take(area.height as usize)
+        .map(|(index, row)| {
+            let marker = if Some(index) == focused { "●" } else { " " };
+            let style = if Some(index) == focused {
+                theme.accent_style()
+            } else {
+                theme.muted_style()
+            };
+            let subagent = if row.is_subagent { "◈" } else { " " };
+            Paragraph::new(Line::from(vec![
+                Span::styled(marker.to_string(), style),
+                Span::raw(format!(
+                    " {:>3}  {:<30}  {:>8}  {:>8}  {:>4} {}",
+                    index + 1,
+                    truncate_label(&row.title, 30),
+                    format_price_summary(&row.cost),
+                    format_tokens(row.total_tokens),
+                    row.messages,
+                    subagent,
+                )),
+            ]))
+        })
+        .enumerate()
+    {
+        frame.render_widget(
+            paragraph,
+            Rect {
+                x: area.x,
+                y: area.y + index as u16,
+                width: area.width,
+                height: 1,
+            },
+        );
+    }
+}
+
+fn render_session_detail(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    row: &SessionUsageRow,
+    theme: &Theme,
+) {
+    let detail = layout_rows::<5, 2>(area);
+
+    frame.render_widget(
+        Paragraph::new(metric_line(
+            "Total tokens: ",
+            format_tokens(row.total_tokens),
+            theme,
+        )),
+        detail[0][0],
+    );
+    frame.render_widget(
+        Paragraph::new(metric_line(
+            "Total cost: ",
+            format_price_summary(&row.cost),
+            theme,
+        )),
+        detail[0][1],
+    );
+    frame.render_widget(
+        Paragraph::new(metric_line(
+            "Input: ",
+            format_tokens(row.input_tokens),
+            theme,
+        )),
+        detail[1][0],
+    );
+    frame.render_widget(
+        Paragraph::new(metric_line(
+            "Output: ",
+            format_tokens(row.output_tokens),
+            theme,
+        )),
+        detail[1][1],
+    );
+    frame.render_widget(
+        Paragraph::new(metric_line(
+            "Cache: ",
+            format_tokens(row.cache_tokens),
+            theme,
+        )),
+        detail[2][0],
+    );
+    frame.render_widget(
+        Paragraph::new(metric_line("Messages: ", row.messages.to_string(), theme)),
+        detail[2][1],
+    );
+    frame.render_widget(
+        Paragraph::new(metric_line("Prompts: ", row.prompts.to_string(), theme)),
+        detail[3][0],
+    );
+    frame.render_widget(
+        Paragraph::new(metric_line(
+            "Elapsed: ",
+            row.elapsed_secs()
+                .map(format_duration)
+                .unwrap_or_else(|| "—".to_string()),
+            theme,
+        )),
+        detail[3][1],
+    );
+    frame.render_widget(
+        Paragraph::new(metric_line("Project: ", row.project.clone(), theme)),
+        detail[4][0],
+    );
+    frame.render_widget(
+        Paragraph::new(metric_line(
+            "Active days: ",
+            row.active_days.to_string(),
+            theme,
+        )),
+        detail[4][1],
+    );
+}
+
 fn layout_rows<const ROW: usize, const COL: usize>(area: Rect) -> [[Rect; COL]; ROW] {
     Layout::default()
         .direction(Direction::Vertical)
@@ -510,9 +746,9 @@ fn layout_rows<const ROW: usize, const COL: usize>(area: Rect) -> [[Rect; COL]; 
 
 #[cfg(test)]
 mod tests {
-    use super::{render_models, render_providers};
+    use super::{render_models, render_providers, render_sessions};
     use crate::analytics::heatmap_data::HeatmapData;
-    use crate::analytics::model_stats::{ModelChartData, UsageRow};
+    use crate::analytics::model_stats::{ModelChartData, SessionUsageRow, UsageRow};
     use crate::analytics::{AnalyticsSnapshot, OverviewStats};
     use crate::ui::theme::Theme;
     use crate::utils::pricing::PriceSummary;
@@ -565,6 +801,7 @@ mod tests {
             chart: empty_chart(),
             providers,
             provider_chart: empty_chart(),
+            sessions: Vec::new(),
             heatmap: HeatmapData {
                 weeks: Vec::new(),
                 month_labels: Vec::new(),
@@ -621,5 +858,66 @@ mod tests {
 
         assert!(page_text(&empty, false).contains("No model activity in this time range."));
         assert!(page_text(&empty, true).contains("No provider activity in this time range."));
+    }
+
+    fn session_row_fixture(id: &str, title: &str, subagent: bool) -> SessionUsageRow {
+        SessionUsageRow {
+            id: id.to_string(),
+            title: title.to_string(),
+            project: "demo".to_string(),
+            is_subagent: subagent,
+            total_tokens: 42,
+            input_tokens: 21,
+            output_tokens: 11,
+            cache_tokens: 10,
+            messages: 3,
+            prompts: 2,
+            active_days: 1,
+            cost: PriceSummary::default(),
+            first_activity: None,
+            last_activity: None,
+            percentage: 100.0,
+        }
+    }
+
+    fn sessions_text(rows: Vec<SessionUsageRow>) -> String {
+        let theme = Theme::builtin_dark();
+        let mut terminal = Terminal::new(TestBackend::new(70, 16)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_sessions(frame, frame.area(), &rows, 0, None, &theme);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let mut text = String::new();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                if let Some(cell) = buffer.cell((x, y)) {
+                    text.push_str(cell.symbol());
+                }
+            }
+        }
+        text
+    }
+
+    #[test]
+    fn renders_session_titles_costs_and_the_subagent_marker() {
+        let text = sessions_text(vec![
+            session_row_fixture("ses_big", "Big job", true),
+            session_row_fixture("ses_small", "Small chat", false),
+        ]);
+
+        assert!(text.contains("Big job"));
+        assert!(text.contains("Small chat"));
+        assert!(text.contains("◈"));
+        assert!(text.contains("Total tokens: "));
+        assert!(text.contains("Elapsed: "));
+        assert!(text.contains("Project: "));
+    }
+
+    #[test]
+    fn renders_the_sessions_empty_state() {
+        assert!(sessions_text(Vec::new()).contains("No session activity in this time range."));
     }
 }

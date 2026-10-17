@@ -114,3 +114,48 @@ pub fn percentage(part: u64, total: u64) -> f64 {
         (part as f64 / total as f64) * 100.0
     }
 }
+
+/// A whole-seconds span as a short human duration: `45s`, `12m`, `3h 12m`, `2d 4h`.
+pub fn format_duration(total_secs: i64) -> String {
+    let total_secs = total_secs.max(0);
+    let days = total_secs / 86_400;
+    let hours = total_secs % 86_400 / 3_600;
+    let minutes = total_secs % 3_600 / 60;
+    let seconds = total_secs % 60;
+
+    if days > 0 {
+        if hours > 0 {
+            format!("{days}d {hours}h")
+        } else {
+            format!("{days}d")
+        }
+    } else if hours > 0 {
+        if minutes > 0 {
+            format!("{hours}h {minutes}m")
+        } else {
+            format!("{hours}h")
+        }
+    } else if minutes > 0 {
+        format!("{minutes}m")
+    } else {
+        format!("{seconds}s")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_duration;
+
+    #[test]
+    fn formats_durations_without_trailing_zero_units() {
+        assert_eq!(format_duration(0), "0s");
+        assert_eq!(format_duration(45), "45s");
+        assert_eq!(format_duration(60), "1m");
+        assert_eq!(format_duration(150), "2m");
+        assert_eq!(format_duration(3_600), "1h");
+        assert_eq!(format_duration(11_520), "3h 12m");
+        assert_eq!(format_duration(183_600), "2d 3h");
+        assert_eq!(format_duration(172_800), "2d");
+        assert_eq!(format_duration(-5), "0s");
+    }
+}
