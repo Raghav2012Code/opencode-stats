@@ -1305,6 +1305,7 @@ mod tests {
     }
 
     use crate::analytics::build_snapshot;
+    use crate::test_support::unique_temp_dir;
     use std::path::PathBuf;
 
     fn empty_snapshot() -> crate::analytics::AnalyticsSnapshot {
@@ -1360,13 +1361,7 @@ mod tests {
         );
         assert!(documents[1].1.contains("\"range\": \"all\""));
 
-        let dir = std::env::temp_dir().join(format!(
-            "oc-stats-export-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
-        ));
+        let dir = unique_temp_dir("export-test");
         std::fs::create_dir_all(&dir).unwrap();
         for (filename, content) in &documents {
             std::fs::write(dir.join(filename), content).unwrap();

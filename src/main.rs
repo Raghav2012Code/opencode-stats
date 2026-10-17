@@ -3,6 +3,8 @@ mod cache;
 mod config;
 mod db;
 mod stats_output;
+#[cfg(test)]
+mod test_support;
 mod ui;
 mod utils;
 
@@ -321,6 +323,7 @@ mod tests {
     use crate::config::app_config::AppConfig;
     use crate::db::models::{AppData, ImportStats};
     use crate::stats_output::{StatsFormat, format_stats_line, stats_csv, stats_json};
+    use crate::test_support::unique_temp_dir;
     use crate::ui::app::Page;
     use crate::utils::pricing::ZeroCostBehavior;
     use crate::utils::time::TimeRange;
@@ -385,13 +388,7 @@ mod tests {
     #[test]
     fn the_written_file_holds_exactly_what_stdout_would() {
         let snapshot = empty_snapshot();
-        let dir = std::env::temp_dir().join(format!(
-            "oc-stats-out-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
-        ));
+        let dir = unique_temp_dir("out-test");
         std::fs::create_dir_all(&dir).unwrap();
 
         for (format, name) in [

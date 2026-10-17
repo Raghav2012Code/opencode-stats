@@ -415,9 +415,9 @@ mod tests {
     use crate::db::models::{
         JsonCacheTokensRecord, JsonMessageRecord, JsonPathRecord, JsonTimeRecord, JsonTokensRecord,
     };
+    use crate::test_support::unique_temp_path;
     use rusqlite::Connection;
     use std::fs;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn parses_assistant_json_record() {
@@ -469,11 +469,7 @@ mod tests {
     fn reads_a_database_that_has_only_the_modern_tables() {
         // A fresh OpenCode install has session_v2 and session_message and no legacy pair.
         // Queries that name the legacy tables must not be issued at all.
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let db_path = std::env::temp_dir().join(format!("oc-stats-modern-only-{nonce}.db"));
+        let db_path = unique_temp_path("modern-only", ".db");
         let conn = Connection::open(&db_path).unwrap();
 
         conn.execute_batch(
@@ -513,11 +509,7 @@ mod tests {
 
     #[test]
     fn reads_modern_tables_without_double_counting_migrated_sessions() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let db_path = std::env::temp_dir().join(format!("oc-stats-v2-test-{nonce}.db"));
+        let db_path = unique_temp_path("v2-test", ".db");
         let conn = Connection::open(&db_path).unwrap();
 
         conn.execute_batch(
@@ -664,11 +656,7 @@ mod tests {
 
     #[test]
     fn tracks_skipped_sqlite_messages_during_import() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let db_path = std::env::temp_dir().join(format!("oc-stats-load-test-{nonce}.db"));
+        let db_path = unique_temp_path("load-test", ".db");
         let conn = Connection::open(&db_path).unwrap();
 
         conn.execute_batch(

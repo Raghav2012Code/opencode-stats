@@ -129,17 +129,10 @@ mod tests {
     };
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     use rusqlite::Connection;
 
-    fn temp_path(label: &str) -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!("oc-stats-{label}-{nonce}.db"))
-    }
+    use crate::test_support::unique_temp_path;
 
     /// A synthetic database the discovery check accepts, so tests need no real OpenCode data.
     fn synthetic_database(path: &Path) {
@@ -181,14 +174,14 @@ mod tests {
     fn a_missing_named_path_is_never_replaced_by_a_default_database() {
         // This machine has a real OpenCode database in the standard locations; a named
         // path that does not exist must still be an error rather than a silent fallback.
-        let missing = temp_path("missing");
+        let missing = unique_temp_path("missing", ".db");
 
         assert_eq!(resolve_database_path(Some(missing)), None);
     }
 
     #[test]
     fn a_named_file_that_is_not_a_database_is_rejected() {
-        let junk = temp_path("junk");
+        let junk = unique_temp_path("junk", ".db");
         fs::write(&junk, b"this is not sqlite").unwrap();
 
         assert_eq!(resolve_database_path(Some(junk.clone())), None);
@@ -197,7 +190,7 @@ mod tests {
 
     #[test]
     fn a_named_valid_database_is_used() {
-        let db_path = temp_path("named-valid");
+        let db_path = unique_temp_path("named-valid", ".db");
         synthetic_database(&db_path);
 
         assert_eq!(
@@ -209,7 +202,7 @@ mod tests {
 
     #[test]
     fn rejects_sqlite_without_expected_schema() {
-        let db_path = temp_path("schema");
+        let db_path = unique_temp_path("schema", ".db");
         let conn = Connection::open(&db_path).unwrap();
         conn.execute("CREATE TABLE only_one(id INTEGER)", [])
             .unwrap();

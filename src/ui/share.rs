@@ -181,9 +181,8 @@ fn write_png(image: &RgbaImage, path: &Path) -> PngArtifact {
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::rc::Rc;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     use color_eyre::eyre::{Result, eyre};
     use image::RgbaImage;
@@ -194,6 +193,7 @@ mod tests {
     use super::{
         ClipboardContent, ClipboardSink, PngArtifact, ShareJob, ShareOutcome, perform_share,
     };
+    use crate::test_support::unique_temp_dir;
     use crate::ui::theme::Theme;
 
     #[derive(Default)]
@@ -239,16 +239,6 @@ mod tests {
         buffer
     }
 
-    fn temp_dir(label: &str) -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!("oc-stats-share-{label}-{nonce}"));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
     fn job(dir: &Path, timestamp: i64) -> ShareJob {
         ShareJob {
             buffer: a_card_buffer(),
@@ -289,7 +279,7 @@ mod tests {
 
     #[test]
     fn copies_the_card_and_writes_the_same_card_to_a_png() {
-        let dir = temp_dir("happy");
+        let dir = unique_temp_dir("share-happy");
         let (outcome, observed) = share(&dir, 1_700_000_000, |_| {});
 
         assert_eq!(outcome.clipboard, ClipboardContent::Image);
@@ -330,7 +320,7 @@ mod tests {
 
     #[test]
     fn falls_back_to_the_text_summary_and_says_so() {
-        let dir = temp_dir("fallback");
+        let dir = unique_temp_dir("share-fallback");
         let (outcome, observed) = share(&dir, 7, |state| state.fail_image_calls = 3);
 
         assert_eq!(
@@ -358,7 +348,7 @@ mod tests {
 
     #[test]
     fn reports_the_error_and_still_writes_the_file_when_nothing_can_be_placed() {
-        let dir = temp_dir("failed");
+        let dir = unique_temp_dir("share-failed");
         let (outcome, _) = share(&dir, 9, |state| {
             state.fail_image_calls = 3;
             state.fail_text_calls = 3;
@@ -386,7 +376,7 @@ mod tests {
 
     #[test]
     fn retries_a_transient_failure_instead_of_giving_up() {
-        let dir = temp_dir("retry");
+        let dir = unique_temp_dir("share-retry");
         let (outcome, observed) = share(&dir, 11, |state| state.fail_image_calls = 1);
 
         assert_eq!(outcome.clipboard, ClipboardContent::Image);
@@ -398,7 +388,7 @@ mod tests {
 
     #[test]
     fn two_copies_at_different_times_write_two_files() {
-        let dir = temp_dir("twice");
+        let dir = unique_temp_dir("share-twice");
         let (first, _) = share(&dir, 100, |_| {});
         let (second, _) = share(&dir, 200, |_| {});
 
