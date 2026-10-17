@@ -32,6 +32,14 @@ fn candidate_config_paths() -> Result<Vec<PathBuf>> {
         paths.push(path.join("opencode").join("opencode.jsonc"));
     }
 
+    // OpenCode keeps its global config under ~/.config/opencode on every platform, which
+    // is not dirs::config_dir() on Windows, where it points at %APPDATA%. The database
+    // discovery reads from ~/.local/share for the same reason.
+    if let Some(home) = dirs::home_dir() {
+        paths.push(home.join(".config").join("opencode").join("opencode.json"));
+        paths.push(home.join(".config").join("opencode").join("opencode.jsonc"));
+    }
+
     if let Some(custom) = env::var_os("OPENCODE_CONFIG") {
         paths.push(PathBuf::from(custom));
     }
@@ -39,6 +47,10 @@ fn candidate_config_paths() -> Result<Vec<PathBuf>> {
     if let Some(project) = discover_project_config_path()? {
         paths.push(project);
     }
+
+    // On Linux dirs::config_dir() already is ~/.config, so the two sets can coincide.
+    let mut seen = std::collections::HashSet::new();
+    paths.retain(|path| seen.insert(path.clone()));
 
     Ok(paths)
 }
@@ -121,9 +133,38 @@ fn extract_pricing_overrides(config: &Value) -> BTreeMap<String, ModelPricing> {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_pricing_overrides, merge_json};
+    use super::{candidate_config_paths, extract_pricing_overrides, merge_json};
     use rust_decimal::Decimal;
     use serde_json::json;
+
+    #[test]
+    fn looks_for_the_global_config_where_opencode_keeps_it() {
+        // OpenCode stores its global config under ~/.config/opencode on Windows too,
+        // while dirs::config_dir() points at %APPDATA%. A config the user actually has
+        // must be among the candidates, whichever directory that is.
+        let paths = candidate_config_paths().unwrap();
+        let home = dirs::home_dir().unwrap();
+        let expected = [
+            home.join(".config").join("opencode").join("opencode.json"),
+            home.join(".config").join("opencode").join("opencode.jsonc"),
+        ];
+        for path in expected {
+            assert!(
+                paths.contains(&path),
+                "missing candidate {path:?} in {paths:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn candidate_paths_are_unique() {
+        // On Linux dirs::config_dir() is ~/.config, so the two sets coincide there.
+        let paths = candidate_config_paths().unwrap();
+        let mut seen = std::collections::HashSet::new();
+        for path in &paths {
+            assert!(seen.insert(path.clone()), "duplicate candidate {path:?}");
+        }
+    }
 
     #[test]
     fn merges_nested_objects() {
