@@ -29,15 +29,15 @@ async fn main() -> Result<()> {
         return run_command(command).await;
     }
 
-    let data = load_app_data(&InputOptions {
+    let input_options = InputOptions {
         database_path: cli.database_path,
-    })
-    .wrap_err("failed to load OpenCode usage data")?;
+    };
+    let data = load_app_data(&input_options).wrap_err("failed to load OpenCode usage data")?;
 
     let pricing = PricingCatalog::load().wrap_err("failed to load pricing catalog")?;
     let (theme_kind, theme) = resolve_theme(cli.theme).wrap_err("failed to resolve theme")?;
     let zero_cost_behavior = ZeroCostBehavior::from_ignore_zero(cli.ignore_zero);
-    let app = App::new(data, pricing, theme, zero_cost_behavior);
+    let app = App::new(data, pricing, theme, zero_cost_behavior, input_options);
     app.run().await?;
     print_exit_art(theme_kind);
     Ok(())

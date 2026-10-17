@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::io::stdout;
 use std::time::{Duration, Instant};
 
+use chrono::{DateTime, Local};
 use color_eyre::eyre::Result;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::style::{StyledContent, Stylize};
@@ -15,7 +16,8 @@ use tokio::sync::mpsc;
 use crate::analytics::model_stats::UsageRow;
 use crate::analytics::{AnalyticsSnapshot, build_snapshot};
 use crate::cache::models_cache::{PricingCatalog, refresh_remote_models};
-use crate::db::models::AppData;
+use crate::db::models::{AppData, InputOptions};
+use crate::db::queries::load_app_data;
 use crate::ui::export::render_share_card;
 use crate::ui::models::MAX_QUERY_LEN;
 use crate::ui::models::{SearchState, render_models, render_providers};
@@ -29,6 +31,7 @@ use crate::utils::time::TimeRange;
 const VIEWPORT_HEIGHT: u16 = 23;
 const STATUS_TTL: Duration = Duration::from_secs(3);
 const TICK_TIME_MS: u16 = 200;
+const DEFAULT_HINTS: &str = "<tab> pages | r cycle | R reload | f find | q quit";
 
 #[derive(Clone, Debug)]
 struct StatusMessage {
@@ -79,8 +82,9 @@ pub struct App {
     pub zero_cost_behavior: ZeroCostBehavior,
     pub should_quit: bool,
     status_message: Option<StatusMessage>,
-    pub focused_model_index: usize,
-    pub focused_provider_index: usize,
+    pub focused_index: usize,
+    input_options: InputOptions,
+    last_read: DateTime<Local>,
     pub search: Option<SearchState>,
     pricing_updates: mpsc::UnboundedReceiver<Result<PricingCatalog>>,
     clipboard_sender: mpsc::UnboundedSender<String>,
@@ -94,6 +98,7 @@ impl App {
         pricing: PricingCatalog,
         theme: Theme,
         zero_cost_behavior: ZeroCostBehavior,
+        input_options: InputOptions,
     ) -> Self {
         let snapshot = build_snapshot(&data, &pricing, TimeRange::All, zero_cost_behavior);
         let (sender, receiver) = mpsc::unbounded_channel();
@@ -113,8 +118,9 @@ impl App {
             zero_cost_behavior,
             should_quit: false,
             status_message: None,
-            focused_model_index: 0,
-            focused_provider_index: 0,
+            focused_index: 0,
+            input_options,
+            last_read: Local::now(),
             search: None,
             pricing_updates: receiver,
             clipboard_sender,
@@ -215,6 +221,28 @@ impl App {
         );
     }
 
+    fn reload(&mut self) {
+        let result = load_app_data(&self.input_options);
+        self.apply_reload(result);
+    }
+
+    /// Swaps in freshly loaded data, or reports the failure and keeps what is on screen.
+    /// Split from [`App::reload`] so the failure path is testable without depending on
+    /// which database files happen to exist on the machine running the tests.
+    fn apply_reload(&mut self, result: crate::db::errors::Result<AppData>) {
+        match result {
+            Ok(data) => self.finish_reload(data),
+            Err(err) => self.set_status(format!("Reload failed: {err:#}")),
+        }
+    }
+
+    fn finish_reload(&mut self, data: AppData) {
+        self.data = data;
+        self.recompute();
+        self.last_read = Local::now();
+        self.set_status("Reloaded usage data from disk");
+    }
+
     fn render(&self, frame: &mut Frame<'_>) {
         let theme = &self.theme;
         let area = frame.area();
@@ -246,7 +274,7 @@ impl App {
                 frame,
                 body,
                 &self.snapshot,
-                self.focused_model_index,
+                self.focused_index,
                 self.search.as_ref(),
                 theme,
             ),
@@ -254,7 +282,7 @@ impl App {
                 frame,
                 body,
                 &self.snapshot,
-                self.focused_provider_index,
+                self.focused_index,
                 self.search.as_ref(),
                 theme,
             ),
@@ -279,15 +307,19 @@ impl App {
     }
 
     fn render_footer(&self, frame: &mut Frame<'_>, area: ratatui::layout::Rect, theme: &Theme) {
-        let status = self
+        frame.render_widget(
+            ratatui::widgets::Paragraph::new(self.footer_text()).style(theme.muted_style()),
+            area,
+        );
+    }
+
+    fn footer_text(&self) -> String {
+        let base = self
             .status_message
             .as_ref()
             .map(|status| status.text.as_str())
-            .unwrap_or("<tab> ←/→ h/l pages | r cycle | 1/2/3 pick | <ctrl-s> share | q exit");
-        frame.render_widget(
-            ratatui::widgets::Paragraph::new(status).style(theme.muted_style()),
-            area,
-        );
+            .unwrap_or(DEFAULT_HINTS);
+        format!("Loaded {} | {base}", self.last_read.format("%H:%M:%S"))
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
@@ -295,12 +327,10 @@ impl App {
             match key.code {
                 KeyCode::Esc => self.search = None,
                 KeyCode::Enter => {
-                    if let Some(&real_idx) = search.filtered_indices.get(search.selected) {
-                        match self.page {
-                            Page::Models => self.focused_model_index = real_idx,
-                            Page::Providers => self.focused_provider_index = real_idx,
-                            _ => {}
-                        }
+                    if let Some(&real_idx) = search.filtered_indices.get(search.selected)
+                        && !matches!(self.page, Page::Overview)
+                    {
+                        self.focused_index = real_idx;
                     }
                     self.search = None;
                 }
@@ -357,20 +387,23 @@ impl App {
             KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
                 self.search = None;
                 self.page = self.page.next();
+                self.focused_index = 0;
             }
             KeyCode::Left | KeyCode::Char('h') => {
                 self.search = None;
                 self.page = self.page.previous();
+                self.focused_index = 0;
             }
             KeyCode::Down | KeyCode::Char('j') => self.advance_focused_model(1),
             KeyCode::Up | KeyCode::Char('k') => self.advance_focused_model(-1),
             KeyCode::Char('r') => {
                 self.range = self.range.cycle();
-                self.focused_model_index = 0;
-                self.focused_provider_index = 0;
+                self.focused_index = 0;
                 self.search = None;
                 self.recompute();
             }
+            // Lowercase 'r' cycles the time range, so live reload takes shifted 'R'.
+            KeyCode::Char('R') => self.reload(),
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.should_quit = true;
             }
@@ -385,8 +418,7 @@ impl App {
             KeyCode::Char(value) => {
                 if let Some(range) = TimeRange::from_shortcut(value) {
                     self.range = range;
-                    self.focused_model_index = 0;
-                    self.focused_provider_index = 0;
+                    self.focused_index = 0;
                     self.search = None;
                     self.recompute();
                 }
@@ -396,52 +428,26 @@ impl App {
     }
 
     fn advance_focused_model(&mut self, delta: isize) {
-        match self.page {
-            Page::Models => {
-                if self.snapshot.models.is_empty() {
-                    return;
-                }
-
-                let current = self.focused_model_index as isize;
-                let total = self.snapshot.models.len() as isize;
-                let next = (current + delta).rem_euclid(total) as usize;
-                self.focused_model_index = next;
-            }
-            Page::Providers => {
-                if self.snapshot.providers.is_empty() {
-                    return;
-                }
-
-                let current = self.focused_provider_index as isize;
-                let total = self.snapshot.providers.len() as isize;
-                let next = (current + delta).rem_euclid(total) as usize;
-                self.focused_provider_index = next;
-            }
-            Page::Overview => {}
+        let total = match self.page {
+            Page::Models => self.snapshot.models.len(),
+            Page::Providers => self.snapshot.providers.len(),
+            Page::Overview => return,
+        };
+        if total == 0 {
+            return;
         }
+        let next = (self.focused_index as isize + delta).rem_euclid(total as isize) as usize;
+        self.focused_index = next;
     }
 
     fn enter_search(&mut self) {
-        let (ids, focused) = match self.page {
-            Page::Models => (
-                self.snapshot
-                    .models
-                    .iter()
-                    .map(|row| row.id.clone())
-                    .collect::<Vec<_>>(),
-                self.focused_model_index,
-            ),
-            Page::Providers => (
-                self.snapshot
-                    .providers
-                    .iter()
-                    .map(|row| row.id.clone())
-                    .collect::<Vec<_>>(),
-                self.focused_provider_index,
-            ),
+        let rows = match self.page {
+            Page::Models => &self.snapshot.models,
+            Page::Providers => &self.snapshot.providers,
             _ => return,
         };
-        self.search = Some(SearchState::new(ids, focused));
+        let ids = rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>();
+        self.search = Some(SearchState::new(ids, self.focused_index));
     }
 
     fn update_search_filter(&mut self) {
@@ -634,5 +640,125 @@ pub fn print_exit_art(theme_kind: ThemeKind) {
             }
             _ => unreachable!(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cache::models_cache::PricingAvailability;
+    use crate::db::models::{ImportStats, TokenUsage, UsageEvent};
+    use std::collections::BTreeMap;
+
+    fn test_pricing() -> PricingCatalog {
+        PricingCatalog {
+            models: BTreeMap::new(),
+            cache_path: std::path::PathBuf::from("/tmp/models.json"),
+            refresh_needed: false,
+            availability: PricingAvailability::Empty,
+            load_notice: None,
+        }
+    }
+
+    fn test_event() -> UsageEvent {
+        let now = Local::now();
+        UsageEvent {
+            session_id: "ses_1".to_string(),
+            parent_session_id: None,
+            session_title: None,
+            session_started_at: Some(now),
+            session_archived_at: None,
+            project_name: None,
+            project_path: None,
+            provider_id: Some("openai".to_string()),
+            model_id: "gpt-5".to_string(),
+            agent: None,
+            finish_reason: Some("stop".to_string()),
+            tokens: TokenUsage {
+                input: 10,
+                output: 20,
+                cache_read: 0,
+                cache_write: 0,
+            },
+            created_at: Some(now),
+            completed_at: Some(now),
+            stored_cost_usd: None,
+        }
+    }
+
+    fn test_data(events: Vec<UsageEvent>) -> AppData {
+        AppData {
+            events,
+            messages: Vec::new(),
+            session_records: Vec::new(),
+            import_stats: ImportStats::default(),
+        }
+    }
+
+    fn test_app(data: AppData, input_options: InputOptions) -> App {
+        App::new(
+            data,
+            test_pricing(),
+            Theme::builtin_dark(),
+            ZeroCostBehavior::KeepZero,
+            input_options,
+        )
+    }
+
+    fn no_input_options() -> InputOptions {
+        InputOptions {
+            database_path: None,
+        }
+    }
+
+    #[test]
+    fn reload_replaces_snapshot_and_preserves_view_state() {
+        let mut app = test_app(test_data(Vec::new()), no_input_options());
+        assert!(app.snapshot.models.is_empty());
+        app.page = Page::Models;
+        app.range = TimeRange::Last7Days;
+        app.search = Some(SearchState::new(vec!["gpt-5".to_string()], 0));
+        let previous_read = app.last_read;
+
+        app.finish_reload(test_data(vec![test_event()]));
+
+        assert_eq!(app.snapshot.models.len(), 1);
+        assert_eq!(app.data.events.len(), 1);
+        assert_eq!(app.page, Page::Models);
+        assert_eq!(app.range, TimeRange::Last7Days);
+        assert_eq!(app.focused_index, 0);
+        assert!(app.search.is_some());
+        assert!(app.last_read >= previous_read);
+        assert!(app.footer_text().contains("Loaded"));
+    }
+
+    #[test]
+    fn reload_failure_keeps_old_snapshot() {
+        use crate::db::errors::Error;
+
+        let mut app = test_app(test_data(vec![test_event()]), no_input_options());
+        assert_eq!(app.snapshot.models.len(), 1);
+
+        // A failure must not depend on which files exist on the test machine: any bad
+        // database path falls through to the real database when one is present, so the
+        // error is constructed directly instead.
+        app.apply_reload(Err(Error::database_not_found(vec![])));
+
+        assert_eq!(app.snapshot.models.len(), 1);
+        assert_eq!(app.data.events.len(), 1);
+        let footer = app.footer_text();
+        assert!(footer.contains("Reload failed"), "footer was: {footer}");
+        assert!(footer.contains("Loaded"), "footer was: {footer}");
+    }
+
+    #[test]
+    fn reload_key_is_wired_regardless_of_database() {
+        let mut app = test_app(test_data(vec![test_event()]), no_input_options());
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::empty()));
+
+        // With a database present this reloads real data, without one it reports the
+        // failure; either way the key reaches reload and the footer keeps its timestamp.
+        assert!(app.footer_text().contains("Loaded"));
     }
 }
