@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::io::stdout;
 use std::time::{Duration, Instant};
 
@@ -19,10 +18,11 @@ use crate::cache::models_cache::{PricingCatalog, refresh_remote_models};
 use crate::db::models::{AppData, InputOptions};
 use crate::db::queries::load_app_data;
 use crate::stats_output::{stats_csv, stats_json};
-use crate::ui::export::render_share_card;
+use crate::ui::export::{artifact_prefix, share_card_file_name};
 use crate::ui::models::MAX_QUERY_LEN;
 use crate::ui::models::{SearchState, render_models, render_providers, render_sessions};
 use crate::ui::overview::render_overview;
+use crate::ui::share::{ClipboardSink, ShareJob, SystemClipboard, perform_share};
 use crate::ui::theme::{Theme, ThemeKind};
 use crate::ui::widgets::common::{CONTENT_WIDTH, left_aligned_content, segment_span};
 use crate::utils::formatting::format_price_summary;
@@ -31,21 +31,17 @@ use crate::utils::time::TimeRange;
 
 const VIEWPORT_HEIGHT: u16 = 23;
 const STATUS_TTL: Duration = Duration::from_secs(3);
+/// A copy result names a file the user may want to read or open, so it is not the 3-second
+/// flash used for passing notices.
+const SHARE_STATUS_TTL: Duration = Duration::from_secs(10);
 const TICK_TIME_MS: u16 = 200;
 /// Fits the 70-column footer beside the `Loaded HH:MM:SS | ` prefix: keep it short.
-const DEFAULT_HINTS: &str = "tab pages|r/R range|f find|^s share|e export|q quit";
+const DEFAULT_HINTS: &str = "tab pages|r/R range|f find|s/^s share|e export|q quit";
 
 #[derive(Clone, Debug)]
 struct StatusMessage {
     text: String,
     expires_at: Option<Instant>,
-}
-
-#[derive(Debug)]
-struct ClipboardJob {
-    buffer: ratatui::buffer::Buffer,
-    theme: Theme,
-    summary: String,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -238,7 +234,8 @@ impl App {
                 }
                 Some(update) = self.clipboard_updates.recv() => {
                     self.copy_in_progress = false;
-                    self.set_status(update);
+                    // The result names a file, so give it longer than a passing notice.
+                    self.set_status_for(update, SHARE_STATUS_TTL);
                 }
                 _ = tick.tick() => {}
             }
@@ -454,6 +451,9 @@ impl App {
             KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.copy_current_page();
             }
+            // Some terminals take Ctrl+S as XOFF and never deliver it, so the same action
+            // is on plain 's' as well.
+            KeyCode::Char('s') => self.copy_current_page(),
             KeyCode::Char('f') | KeyCode::Char('/')
                 if matches!(self.page, Page::Models | Page::Providers | Page::Sessions) =>
             {
@@ -518,9 +518,14 @@ impl App {
     }
 
     fn set_status(&mut self, text: impl Into<String>) {
+        self.set_status_for(text, STATUS_TTL);
+    }
+
+    /// A status that stays long enough to read, for results that name a file.
+    fn set_status_for(&mut self, text: impl Into<String>, ttl: Duration) {
         self.status_message = Some(StatusMessage {
             text: text.into(),
-            expires_at: Some(Instant::now() + STATUS_TTL),
+            expires_at: Some(Instant::now() + ttl),
         });
     }
 
@@ -567,7 +572,7 @@ impl App {
             return;
         }
 
-        let job = match self.prepare_clipboard_job() {
+        let job = match self.prepare_share_job() {
             Ok(job) => job,
             Err(err) => {
                 self.set_status(format!("Copy failed: {err}"));
@@ -576,23 +581,27 @@ impl App {
         };
 
         self.copy_in_progress = true;
-        self.set_status("Rendering share card in background ...");
+        self.set_status_for("Rendering share card in background ...", SHARE_STATUS_TTL);
 
         let sender = self.clipboard_sender.clone();
         tokio::task::spawn_blocking(move || {
-            let message = match copy_clipboard_job(job) {
-                Ok(message) => message,
-                Err(err) => format!("Copy failed: {err}"),
-            };
-            let _ = sender.send(message);
+            let outcome = perform_share(job, || {
+                SystemClipboard::open().map(|sink| Box::new(sink) as Box<dyn ClipboardSink>)
+            });
+            // The message names what the paste will produce and where the PNG went.
+            let _ = sender.send(outcome.message());
         });
     }
 
-    fn prepare_clipboard_job(&self) -> Result<ClipboardJob> {
-        Ok(ClipboardJob {
+    /// Captures the page as it is on screen, plus where its PNG belongs, so the rendering
+    /// thread touches only its own copy.
+    fn prepare_share_job(&self) -> Result<ShareJob> {
+        let timestamp = chrono::Local::now().timestamp();
+        Ok(ShareJob {
             buffer: self.capture_current_page_buffer()?,
             theme: self.theme.clone(),
             summary: self.current_page_summary(),
+            png_path: std::path::PathBuf::from(share_card_file_name(self.range, timestamp)),
         })
     }
 
@@ -641,22 +650,6 @@ fn summary_lines(rows: &[UsageRow]) -> String {
         .join("\n")
 }
 
-fn copy_clipboard_job(job: ClipboardJob) -> Result<String> {
-    match copy_image_to_clipboard(job.buffer, job.theme) {
-        Ok(()) => Ok("Successfully copied to your clipboard".to_string()),
-        Err(_) => {
-            copy_text_to_clipboard(&job.summary)?;
-            Ok("Image export failed, copied text summary instead".to_string())
-        }
-    }
-}
-
-fn copy_text_to_clipboard(summary: &str) -> Result<()> {
-    let mut clipboard = arboard::Clipboard::new()?;
-    clipboard.set_text(summary.to_string())?;
-    Ok(())
-}
-
 /// The files [`App::export_current_view`] writes: `(filename, content)` pairs with
 /// timestamped names, kept pure so tests can assert on the content without touching disk.
 fn export_documents(
@@ -664,7 +657,7 @@ fn export_documents(
     range: TimeRange,
     timestamp: i64,
 ) -> Vec<(String, String)> {
-    let prefix = format!("oc-stats-{}-{timestamp}", range.cli_name());
+    let prefix = artifact_prefix(range, timestamp);
     vec![
         (format!("{prefix}.csv"), stats_csv(snapshot, range)),
         (
@@ -673,17 +666,6 @@ fn export_documents(
                 .unwrap_or_else(|_| "{}".to_string()),
         ),
     ]
-}
-
-fn copy_image_to_clipboard(buffer: ratatui::buffer::Buffer, theme: Theme) -> Result<()> {
-    let image = render_share_card(&buffer, &theme)?;
-    let mut clipboard = arboard::Clipboard::new()?;
-    clipboard.set_image(arboard::ImageData {
-        width: image.width() as usize,
-        height: image.height() as usize,
-        bytes: Cow::Owned(image.into_raw()),
-    })?;
-    Ok(())
 }
 
 pub fn print_exit_art(theme_kind: ThemeKind) {
@@ -970,6 +952,21 @@ mod tests {
         assert_eq!(documents.len(), 2);
         assert_eq!(documents[0].0, "oc-stats-7d-1700000000.csv");
         assert_eq!(documents[1].0, "oc-stats-7d-1700000000.json");
+    }
+
+    #[test]
+    fn the_share_card_sorts_beside_the_exports() {
+        let range = TimeRange::Last7Days;
+        let timestamp = 1_700_000_000;
+        let shared = share_card_file_name(range, timestamp);
+        let exported = export_documents(&empty_snapshot(), range, timestamp);
+
+        assert_eq!(shared, "oc-stats-7d-1700000000.png");
+        assert_eq!(
+            shared.trim_end_matches(".png"),
+            exported[0].0.trim_end_matches(".csv"),
+            "one base name for everything a run writes"
+        );
     }
 
     #[test]

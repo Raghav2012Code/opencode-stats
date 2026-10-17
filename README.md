@@ -28,7 +28,7 @@ A terminal dashboard for OpenCode usage statistics.
 - Supports three time ranges: all time, last 7 days, and last 30 days
 - Built-in 365-day activity heatmap for observing long-term usage trends
 - Supports dark / light theme via command-line argument
-- Copy current view to clipboard: prioritize image export (share card), with automatic fallback to text summary
+- Copy the current view to the clipboard as a share card, with the card also written as a PNG beside your exports and an automatic fallback to a text summary (`Ctrl+S` or `s`)
 - Local model pricing cache with update / clean commands
 - Output data calculation aligns with `opencode stats` and `opencode stats --models` for consistency
 
@@ -164,7 +164,10 @@ Once the program is running, you can quickly navigate pages and time ranges usin
 - `Up` / `Down` / `j` / `k` — Move focus within `Models` / `Providers` pages
 - `r` — Cycle through time ranges
 - `1` / `2` / `3` — Quickly switch time ranges
-- `Ctrl+S` — Copy current view to clipboard
+- `Ctrl+S` or `s` — Copy the current view to the clipboard as a share card, and write it as a PNG beside your exports (`s` is there for terminals that take `Ctrl+S` as XOFF)
+- `e` — Export the current view as CSV and JSON
+- `R` — Reload the database
+- `f` / `/` — Search within the current page
 - `q` / `Esc` / `Ctrl+C` — Exit the program
 
 Pages:

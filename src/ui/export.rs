@@ -10,6 +10,7 @@ use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Rect, Transform};
 use unicode_width::UnicodeWidthStr;
 
 use crate::ui::theme::Theme;
+use crate::utils::time::TimeRange;
 
 const CARD_OUTER_MARGIN_X: u32 = 34;
 const CARD_OUTER_MARGIN_Y: u32 = 30;
@@ -31,6 +32,17 @@ static FONT_REGULAR: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/assets/CascadiaCodeNF.ttf"
 ));
+
+/// The base name everything a run writes shares: `oc-stats-<range>-<timestamp>`. Kept in
+/// one place so the share card sorts beside the CSV and JSON exports.
+pub fn artifact_prefix(range: TimeRange, timestamp: i64) -> String {
+    format!("oc-stats-{}-{timestamp}", range.cli_name())
+}
+
+/// The share card file name for a run.
+pub fn share_card_file_name(range: TimeRange, timestamp: i64) -> String {
+    format!("{}.png", artifact_prefix(range, timestamp))
+}
 
 pub fn render_share_card(buffer: &Buffer, theme: &Theme) -> Result<RgbaImage> {
     let fonts = Fonts::load()?;
