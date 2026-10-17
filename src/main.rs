@@ -29,22 +29,55 @@ async fn main() -> Result<()> {
     color_eyre::install()?;
 
     let cli = CliArgs::parse();
+    // Loaded once and validated up front, so a typo in config.toml fails here rather
+    // than silently falling back to a default. Reported as one line, like every other
+    // startup failure, so the scripted surfaces stay pipeable.
+    let app_config = match AppConfig::load() {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!("error: {err}");
+            std::process::exit(1);
+        }
+    };
+    let database_path = configured_database_path(
+        cli.database_path,
+        app_config.app.database_path().map(PathBuf::from),
+    );
+
     if let Some(command) = cli.command {
-        return run_command(command, cli.database_path, cli.ignore_zero).await;
+        return run_command(command, database_path, cli.ignore_zero).await;
     }
 
-    let input_options = InputOptions {
-        database_path: cli.database_path,
-    };
+    let page = app_config.app.page()?;
+    let range = app_config.app.range()?;
+
+    let input_options = InputOptions { database_path };
     let data = load_app_data(&input_options).wrap_err("failed to load OpenCode usage data")?;
 
     let pricing = PricingCatalog::load().wrap_err("failed to load pricing catalog")?;
-    let (theme_kind, theme) = resolve_theme(cli.theme).wrap_err("failed to resolve theme")?;
+    let (theme_kind, theme) =
+        resolve_theme(cli.theme, &app_config).wrap_err("failed to resolve theme")?;
     let zero_cost_behavior = ZeroCostBehavior::from_ignore_zero(cli.ignore_zero);
-    let app = App::new(data, pricing, theme, zero_cost_behavior, input_options);
+    let app = App::new(
+        data,
+        pricing,
+        theme,
+        zero_cost_behavior,
+        input_options,
+        page,
+        range,
+    );
     app.run().await?;
     print_exit_art(theme_kind);
     Ok(())
+}
+
+/// Which database to read, in order: the `--db` flag, then `[app] db` from config. Both
+/// are named paths, so they win over `OC_STATS_DB_PATH` and over auto-discovery, and a
+/// named path that does not exist is an error rather than a quiet fallback to another
+/// database (see `db::connection`).
+fn configured_database_path(flag: Option<PathBuf>, config_db: Option<PathBuf>) -> Option<PathBuf> {
+    flag.or(config_db)
 }
 
 #[derive(Debug, Parser)]
@@ -247,8 +280,10 @@ fn finalize_cache_update(
     }
 }
 
-fn resolve_theme(cli_theme: Option<ThemeMode>) -> Result<(ThemeKind, Theme)> {
-    let app_config = AppConfig::load().wrap_err("failed to load config.toml")?;
+fn resolve_theme(
+    cli_theme: Option<ThemeMode>,
+    app_config: &AppConfig,
+) -> Result<(ThemeKind, Theme)> {
     let catalog = ThemeCatalog::load().wrap_err("failed to load theme catalog")?;
 
     let mode = cli_theme.unwrap_or(app_config.theme.default);
@@ -280,11 +315,13 @@ fn resolve_theme(cli_theme: Option<ThemeMode>) -> Result<(ThemeKind, Theme)> {
 mod tests {
     use color_eyre::eyre::{Result, eyre};
 
-    use super::{finalize_cache_update, stats_content};
+    use super::{configured_database_path, finalize_cache_update, stats_content};
     use crate::analytics::build_snapshot;
     use crate::cache::models_cache::{PricingAvailability, PricingCatalog};
+    use crate::config::app_config::AppConfig;
     use crate::db::models::{AppData, ImportStats};
     use crate::stats_output::{StatsFormat, format_stats_line, stats_csv, stats_json};
+    use crate::ui::app::Page;
     use crate::utils::pricing::ZeroCostBehavior;
     use crate::utils::time::TimeRange;
     use std::collections::BTreeMap;
@@ -384,6 +421,45 @@ mod tests {
             "a missing parent must be an error, not a silent mkdir"
         );
         assert!(!missing.parent().unwrap().exists());
+    }
+
+    #[test]
+    fn the_flag_beats_the_configured_database_and_config_is_used_without_one() {
+        let flag = PathBuf::from("from-flag.db");
+        let configured = PathBuf::from("from-config.db");
+
+        assert_eq!(
+            configured_database_path(Some(flag.clone()), Some(configured.clone())),
+            Some(flag)
+        );
+        assert_eq!(
+            configured_database_path(None, Some(configured.clone())),
+            Some(configured)
+        );
+        assert_eq!(configured_database_path(None, None), None);
+    }
+
+    #[test]
+    fn a_default_config_changes_nothing_about_the_output() {
+        // The regression guard for the whole personalisation spec: with no config, or a
+        // config that sets nothing, every surface reports exactly what it did before.
+        let absent = AppConfig::default();
+        let empty: AppConfig = toml::from_str("[app]\n[theme]\n").unwrap();
+
+        for config in [absent, empty] {
+            assert_eq!(config.app.page().unwrap(), Page::Overview);
+            assert_eq!(config.app.range().unwrap(), TimeRange::All);
+            assert_eq!(config.app.database_path(), None);
+
+            let snapshot = empty_snapshot();
+            for format in [StatsFormat::Line, StatsFormat::Json, StatsFormat::Csv] {
+                assert_eq!(
+                    stats_content(format, &snapshot, config.app.range().unwrap()).unwrap(),
+                    stats_content(format, &snapshot, TimeRange::All).unwrap(),
+                    "a default config must not change {format:?} output"
+                );
+            }
+        }
     }
 
     fn test_catalog(availability: PricingAvailability) -> PricingCatalog {

@@ -26,9 +26,10 @@ Data flow: `db::queries::load_app_data` → `analytics::build_snapshot` → `ui:
 
 ### Theme
 
-- Config: `~/.config/oc-stats/config.toml`
-- Index: `~/.config/oc-stats/themes.toml`
-- Overrides: `~/.config/oc-stats/themes/*.toml`
+- Config: `<config dir>/oc-stats/config.toml` (`~/.config/oc-stats` on Linux/macOS, `%APPDATA%\oc-stats` on Windows)
+- Index: same directory, `themes.toml`
+- Overrides: same directory, `themes/*.toml`
+- `[app]` section: `page`, `range`, `db` (all optional; absent means Overview, all time, discovered database)
 
 ## Agent skills
 

@@ -66,6 +66,14 @@ impl TimeRange {
             _ => None,
         }
     }
+
+    /// Every variant, so error messages and config validation list the same names the
+    /// command line accepts instead of repeating them.
+    pub const ALL: [Self; 4] = [Self::All, Self::Today, Self::Last7Days, Self::Last30Days];
+
+    pub fn names() -> Vec<&'static str> {
+        Self::ALL.into_iter().map(Self::cli_name).collect()
+    }
 }
 
 pub fn timestamp_ms_to_local(timestamp_ms: i64) -> Option<DateTime<Local>> {

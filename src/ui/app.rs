@@ -75,6 +75,33 @@ impl Page {
             Self::Sessions => Self::Providers,
         }
     }
+
+    /// Every page in tab order, so config validation offers the same names the tab bar
+    /// shows instead of repeating them.
+    pub const ALL: [Self; 4] = [
+        Self::Overview,
+        Self::Models,
+        Self::Providers,
+        Self::Sessions,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Overview => "overview",
+            Self::Models => "models",
+            Self::Providers => "providers",
+            Self::Sessions => "sessions",
+        }
+    }
+
+    pub fn from_name(value: &str) -> Option<Self> {
+        let lowered = value.to_ascii_lowercase();
+        Self::ALL.into_iter().find(|page| page.name() == lowered)
+    }
+
+    pub fn names() -> Vec<&'static str> {
+        Self::ALL.into_iter().map(Self::name).collect()
+    }
 }
 
 pub struct App {
@@ -104,8 +131,10 @@ impl App {
         theme: Theme,
         zero_cost_behavior: ZeroCostBehavior,
         input_options: InputOptions,
+        page: Page,
+        range: TimeRange,
     ) -> Self {
-        let snapshot = build_snapshot(&data, &pricing, TimeRange::All, zero_cost_behavior);
+        let snapshot = build_snapshot(&data, &pricing, range, zero_cost_behavior);
         let (sender, receiver) = mpsc::unbounded_channel();
         let (clipboard_sender, clipboard_updates) = mpsc::unbounded_channel();
         if pricing.refresh_needed {
@@ -117,8 +146,8 @@ impl App {
             data,
             pricing,
             snapshot,
-            page: Page::Overview,
-            range: TimeRange::All,
+            page,
+            range,
             theme,
             zero_cost_behavior,
             should_quit: false,
@@ -786,6 +815,8 @@ mod tests {
             Theme::builtin_dark(),
             ZeroCostBehavior::KeepZero,
             input_options,
+            Page::Overview,
+            TimeRange::All,
         )
     }
 
@@ -793,6 +824,71 @@ mod tests {
         InputOptions {
             database_path: None,
         }
+    }
+
+    #[test]
+    fn the_configured_page_is_the_one_the_first_frame_draws() {
+        // State says which page is open; the drawn frame proves that is the page on
+        // screen, which is what "the app opens on it" means.
+        let app = App::new(
+            test_data(vec![test_event()]),
+            test_pricing(),
+            Theme::builtin_dark(),
+            ZeroCostBehavior::KeepZero,
+            no_input_options(),
+            Page::Sessions,
+            TimeRange::Last7Days,
+        );
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let drawn = terminal.backend().buffer().clone();
+
+        let text: String = drawn.content().iter().map(|cell| cell.symbol()).collect();
+        assert!(
+            text.contains("Sessions"),
+            "the tab bar must show the configured page: {text}"
+        );
+        // The session from the event is listed, which only the Sessions page renders.
+        assert!(
+            text.contains("Session ses_1"),
+            "the Sessions page must be the one drawn: {text}"
+        );
+        assert!(
+            text.contains("Active days"),
+            "the session detail pane must be the one drawn: {text}"
+        );
+        assert!(
+            text.contains("7 Days"),
+            "the configured range must be the one highlighted: {text}"
+        );
+    }
+
+    #[test]
+    fn opens_on_the_configured_page_and_range() {
+        // What `[app] page` and `[app] range` resolve to is what the app opens with, and
+        // the first snapshot is built for that range rather than for all time.
+        let old = Local::now() - chrono::Duration::days(40);
+        let mut event = test_event();
+        event.created_at = Some(old);
+        event.session_started_at = Some(old);
+
+        let app = App::new(
+            test_data(vec![event]),
+            test_pricing(),
+            Theme::builtin_dark(),
+            ZeroCostBehavior::KeepZero,
+            no_input_options(),
+            Page::Sessions,
+            TimeRange::Last7Days,
+        );
+
+        assert_eq!(app.page, Page::Sessions);
+        assert_eq!(app.range, TimeRange::Last7Days);
+        assert!(
+            app.snapshot.models.is_empty(),
+            "the first snapshot must be built for the configured range, not for all time"
+        );
     }
 
     #[test]

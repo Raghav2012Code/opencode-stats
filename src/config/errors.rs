@@ -33,6 +33,13 @@ pub enum Error {
     #[error("invalid color '{value}', expected #RRGGBB")]
     InvalidColor { value: String },
 
+    #[error("invalid value '{value}' for config key {key}; expected one of {expected}")]
+    InvalidAppValue {
+        key: &'static str,
+        value: String,
+        expected: String,
+    },
+
     #[error("theme name cannot be empty")]
     EmptyThemeName,
 
@@ -78,6 +85,18 @@ impl Error {
     pub fn invalid_color(value: impl Into<String>) -> Self {
         Self::InvalidColor {
             value: value.into(),
+        }
+    }
+
+    pub fn invalid_app_value(
+        key: &'static str,
+        value: impl Into<String>,
+        expected: &[&str],
+    ) -> Self {
+        Self::InvalidAppValue {
+            key,
+            value: value.into(),
+            expected: expected.join(", "),
         }
     }
 
