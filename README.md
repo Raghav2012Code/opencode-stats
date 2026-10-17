@@ -1,7 +1,12 @@
 <h1 align="center">OpenCode Stats</h1>
 
 <p align="center">
+  <b>A personal fork of <a href="https://github.com/Cateds/opencode-stats">Cateds/opencode-stats</a></b>
+</p>
+
+<p align="center">
   <a href="https://ratatui.rs/"><img src="https://img.shields.io/badge/Built_With_Ratatui-000?logo=ratatui&logoColor=fff" alt="Built With Ratatui"></a>
+  <a href="https://github.com/Cateds/opencode-stats"><img src="https://img.shields.io/badge/fork_of-Cateds%2Fopencode--stats-blue" alt="Fork of Cateds/opencode-stats"></a>
 </p>
 
 <p align="center">
@@ -18,6 +23,50 @@ A terminal dashboard for OpenCode usage statistics.
 > If you're already using OpenCode and want a quick view of your usage, costs, and activity trends, this tool is ready to go.
 >
 > This is an unofficial community project and is not affiliated with, endorsed by, or maintained by the OpenCode team.
+
+## This fork
+
+This repository is **my personal fork** of [Cateds/opencode-stats](https://github.com/Cateds/opencode-stats). The tool itself, its design and everything it got right are the work of [@Cateds](https://github.com/Cateds) — if you want the upstream project, that is where it lives. Everything below describes the fork you are reading, which I run daily and keep my own changes on top of.
+
+### What I changed
+
+**Numbers you can trust**
+
+- Reads OpenCode's current `session_v2` and `session_message` tables, de-duplicates rows that also exist in the legacy `message` table, and counts `compaction` calls as billed usage. Upstream read the legacy tables alone, which on a migrated database hid most sessions and most of the cost.
+- Cost comes from what OpenCode stored for each row, so totals reconcile exactly against the database.
+
+**A heatmap that reads**
+
+- Four-level colour ramp derived from the active theme, with a legend to match.
+- Buckets by activity percentiles instead of fractions of the busiest day, so one heavy day cannot flatten a year of usage into the lowest shade.
+
+**Scriptable output**
+
+- `oc-stats stats` prints one machine-readable line, JSON or CSV; `--out PATH` writes it to a file; `--range all|today|7d|30d` selects the window. A missing or unusable database exits non-zero with a single line rather than printing zeros.
+
+**The dashboard**
+
+- A `Sessions` page ranked by cost, beside `Models` and `Providers`.
+- Live reload of the database without restarting.
+- `Overview` is the whole picture: always all time and without a range selector. The range applies to `Models`, `Providers` and `Sessions`, and is remembered while you move between pages.
+- The sessions list scrolls with the focus and stays inside its own area.
+- Copy the current view as a share card with `Ctrl+S` or `s`: the image goes to the clipboard, the card is also written as a PNG beside your exports, transient clipboard failures are retried, and the footer names exactly what landed.
+
+**Configuration**
+
+- An optional `[app]` section for `page`, `range` and `db`. Database precedence is `--db`, then `[app] db`, then `OC_STATS_DB_PATH`, then discovery. An invalid value fails at startup naming the key and the accepted values.
+
+**Fixes**
+
+- A database that has only the modern tables (a fresh OpenCode install) no longer fails to load.
+- OpenCode's configuration is read from where it actually lives on Windows (`~/.config/opencode`), not `%APPDATA%`.
+- The range strip never clips its last label, at any terminal width.
+
+**Housekeeping**
+
+- Dead code deleted, the `colored` and `itertools` dependencies dropped, and one usage-row type in place of several.
+
+Every change has tests, and the reported figures are cross-checked against independent SQL over the same database. `README_CN.md` is upstream's document and may lag behind this fork.
 
 ## Features
 
@@ -40,16 +89,20 @@ OpenCode Stats provides three data perspectives:
 | ------------------------------------------------------------- | ----------------------------------------------------------- | ----------------------------------------------------------------- |
 | <img src="images/overview.png" alt="screenshot" width="300"/> | <img src="images/models.png" alt="model uses" width="300"/> | <img src="images/providers.png" alt="provider uses" width="300"/> |
 
+There is a fourth page, `Sessions`, which ranks your sessions by cost, tokens and messages.
+
 Each page also supports exporting a transparent-background share card directly to clipboard:
 
 <img src="images/card.png" alt="card" style="zoom:50%;" />
 
 ## Installation
 
-### Install from crates.io
+> The crates.io package and the pre-built release archives track **upstream**. To run the changes in this fork, install from this repository.
+
+### Install from this repository
 
 ```bash
-cargo install opencode-stats
+cargo install --git https://github.com/Raghav2012Code/opencode-stats
 ```
 
 After installation, run:
@@ -58,11 +111,17 @@ After installation, run:
 oc-stats
 ```
 
+### Install upstream from crates.io
+
+```bash
+cargo install opencode-stats
+```
+
 ### Download pre-built binaries from GitHub Releases
 
-Download the archive for your platform from the Releases page, extract it, and run `oc-stats` directly.
+Pre-built archives are published by **upstream** on the [Cateds/opencode-stats releases page](https://github.com/Cateds/opencode-stats/releases); they contain upstream's build, not this fork's. To run this fork, install with `cargo install --git` above or build from source.
 
-The current release workflow builds for:
+The release workflow builds for:
 
 - Windows `x86_64-pc-windows-msvc`
 - macOS `x86_64-apple-darwin`
@@ -73,7 +132,7 @@ The current release workflow builds for:
 ### Build from source
 
 ```bash
-git clone https://github.com/Cateds/opencode-stats.git
+git clone https://github.com/Raghav2012Code/opencode-stats.git
 cd opencode-stats
 cargo build --release
 ```
@@ -87,8 +146,10 @@ target/release/oc-stats
 Or build directly using the git path:
 
 ```bash
-cargo install --git https://github.com/Cateds/opencode-stats.git
+cargo install --git https://github.com/Raghav2012Code/opencode-stats.git
 ```
+
+Upstream is at [Cateds/opencode-stats](https://github.com/Cateds/opencode-stats) if you want that instead.
 
 ## Usage
 
@@ -121,6 +182,24 @@ By default, `oc-stats` keeps stored costs as-is, including `cost: 0`, to preserv
 ```bash
 oc-stats --ignore-zero
 ```
+
+### Configuration file
+
+Optional settings live in `config.toml` in the app config directory: `%APPDATA%\oc-stats\config.toml` on Windows, `~/.config/oc-stats/config.toml` on Linux and macOS. The file is never created for you; a missing file means the built-in defaults.
+
+```toml
+[app]
+page  = "sessions"   # overview | models | providers | sessions
+range = "7d"         # all | today | 7d | 30d
+db    = "D:\\snapshots\\opencode.db"
+
+[theme]
+default = "auto"     # auto | dark | light
+dark = "dark"
+light = "light"
+```
+
+The database is chosen in this order, most specific first: `--db`, then `[app] db`, then `OC_STATS_DB_PATH`, then discovery of the standard locations. Both named forms are authoritative — the path is used or reported missing, never quietly replaced by another database. An invalid value stops the program at startup and names the key and the values it accepts.
 
 ### Scriptable stats
 
@@ -161,7 +240,7 @@ oc-stats cache clean
 Once the program is running, you can quickly navigate pages and time ranges using the keyboard:
 
 - `Tab` / `Left` / `Right` / `h` / `l` — Switch pages
-- `Up` / `Down` / `j` / `k` — Move focus within `Models` / `Providers` pages
+- `Up` / `Down` / `j` / `k` — Move focus within `Models` / `Providers` / `Sessions`
 - `r` — Cycle through time ranges (on `Models`, `Providers` and `Sessions`)
 - `1` / `2` / `3` / `4` — Quickly switch time ranges (same pages)
 - `Ctrl+S` or `s` — Copy the current view to the clipboard as a share card, and write it as a PNG beside your exports (`s` is there for terminals that take `Ctrl+S` as XOFF)
@@ -172,16 +251,17 @@ Once the program is running, you can quickly navigate pages and time ranges usin
 
 Pages:
 
-- `Overview` — Overall usage summary
+- `Overview` — Overall usage summary, always all time
 - `Models` — Usage statistics by model
 - `Providers` — Usage statistics by provider
+- `Sessions` — Your sessions, ranked by cost, tokens and messages
 
 Time ranges:
 
-- `All time`
+- `All time` (`All` in the header)
 - `Today`
-- `Last 7 days`
-- `Last 30 days`
+- `Last 7 days` (`7d` in the header)
+- `Last 30 days` (`30d` in the header)
 
 The range applies to the `Models`, `Providers` and `Sessions` pages, where the selector appears in the header. `Overview` is the whole picture by design: it always shows all time, offers no range selector, and its exports and share card are named for all time.
 
@@ -191,17 +271,19 @@ The range applies to the `Models`, `Providers` and `Sessions` pages, where the s
 
 `oc-stats` reads the OpenCode local SQLite database.
 
-Default database locations:
+Default database locations, in the order they are checked:
 
-- Windows: `%APPDATA%/opencode/opencode.db`
-- Linux: `~/.local/share/opencode/opencode.db`
-- macOS: `~/Library/Application Support/opencode/opencode.db`
+- `~/.local/share/opencode/opencode.db` — where OpenCode keeps it on Linux, macOS and Windows
+- Windows also: `%LOCALAPPDATA%\opencode\opencode.db`, then `%APPDATA%\opencode\opencode.db`
+- macOS also: `~/Library/Application Support/opencode/opencode.db`
+
+Pass `--db` to point at another database, or set `[app] db` in `config.toml`. A named database is used or reported missing; it is never quietly replaced by one found in the default locations.
 
 ### Pricing data
 
 Model pricing is read from local cache first and refreshed from remote when needed:
 
-- Local cache path: `~/.cache/oc-stats/models.json`
+- Local cache path: `%LOCALAPPDATA%\oc-stats\models.json` on Windows, `~/.cache/oc-stats/models.json` on Linux and macOS
 - Remote source: `https://models.dev/api.json`
 - Cache TTL: 1 hour
 
@@ -220,10 +302,11 @@ If the database stores `cost: 0` for a nonzero-token response, `oc-stats` keeps 
 
 ## License
 
-MIT
+MIT. The original work is copyright © 2026 Cateds, and the changes in this fork are released under the same license. See [LICENSE](./LICENSE) for the full text — keep the copyright notice with any copy or substantial portion of the software, as MIT requires.
 
-## Acknowledgments
+## Credits
 
-- Font: [Cascadia Code](https://github.com/microsoft/cascadia-code), under SIL Open Font License
+- **Original project: [Cateds/opencode-stats](https://github.com/Cateds/opencode-stats) by [@Cateds](https://github.com/Cateds).** This fork is built on that work; all credit for the tool belongs there.
+- Font: [Cascadia Code](https://github.com/microsoft/cascadia-code), under the SIL Open Font License, embedded for the share card
 - Experience inspired by Claude Code's `/stats` command
 - Reference project: [ocmonitor-share](https://github.com/Shlomob/ocmonitor-share)
