@@ -34,10 +34,10 @@ pub fn load_app_data(options: &InputOptions) -> Result<AppData> {
 
 pub fn load_from_sqlite(db_path: &Path) -> Result<AppData> {
     let conn = open_database(db_path)?;
-    let modern = has_modern_schema(&conn)?;
+    let schema = detect_schema(&conn)?;
 
     let mut session_stmt = conn
-        .prepare(sessions_sql(modern))
+        .prepare(sessions_sql(schema))
         .map_err(Error::database_query)?;
 
     let sessions_iter = session_stmt
@@ -72,7 +72,7 @@ pub fn load_from_sqlite(db_path: &Path) -> Result<AppData> {
         .iter()
         .map(|session| (session.id.as_str(), session))
         .collect::<BTreeMap<_, _>>();
-    let sqlite_messages = load_messages_sqlite(&conn, &session_lookup, modern)?;
+    let sqlite_messages = load_messages_sqlite(&conn, &session_lookup, schema)?;
 
     let mut all_events = Vec::new();
     let mut all_messages = Vec::new();
@@ -103,19 +103,32 @@ pub fn load_from_sqlite(db_path: &Path) -> Result<AppData> {
     )
 }
 
-/// Current OpenCode releases write sessions to `session_v2` and their messages to
-/// `session_message`; the `session`/`message` pair keeps the pre-migration rows and a
-/// migrated row is kept in both tables under the same id. Reading only the legacy pair
-/// drops every modern session, while reading both tables whole double counts every
-/// migrated row, so read the v2 rows and add only the legacy rows v2 does not have.
-fn has_modern_schema(conn: &rusqlite::Connection) -> Result<bool> {
-    Ok(connection::table_exists(conn, "session_v2")?
-        && connection::table_exists(conn, "session_message")?)
+/// Which table sets this database has. A fresh OpenCode install has only the modern
+/// pair; a database mid-migration has both; an old one has only the legacy pair.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Schema {
+    modern: bool,
+    legacy: bool,
 }
 
-fn sessions_sql(modern: bool) -> &'static str {
-    if modern {
-        "
+fn detect_schema(conn: &rusqlite::Connection) -> Result<Schema> {
+    Ok(Schema {
+        modern: connection::table_exists(conn, "session_v2")?
+            && connection::table_exists(conn, "session_message")?,
+        legacy: connection::table_exists(conn, "session")?
+            && connection::table_exists(conn, "message")?,
+    })
+}
+
+fn sessions_sql(schema: Schema) -> &'static str {
+    match schema {
+        // A migrated session keeps a copy in both tables, so take v2 and add only the
+        // legacy sessions v2 does not have.
+        Schema {
+            modern: true,
+            legacy: true,
+        } => {
+            "
         SELECT s.id, s.parent_id, s.title, s.time_created, s.time_updated, s.time_archived,
                p.name as project_name, p.worktree as project_worktree
         FROM session_v2 s
@@ -127,19 +140,52 @@ fn sessions_sql(modern: bool) -> &'static str {
         LEFT JOIN project p ON s.project_id = p.id
         WHERE s.id NOT IN (SELECT id FROM session_v2)
         "
-    } else {
+        }
+        Schema {
+            modern: true,
+            legacy: false,
+        } => {
+            "
+        SELECT s.id, s.parent_id, s.title, s.time_created, s.time_updated, s.time_archived,
+               p.name as project_name, p.worktree as project_worktree
+        FROM session_v2 s
+        LEFT JOIN project p ON s.project_id = p.id
         "
+        }
+        Schema {
+            modern: false,
+            legacy: true,
+        } => {
+            "
         SELECT s.id, s.parent_id, s.title, s.time_created, s.time_updated, s.time_archived,
                p.name as project_name, p.worktree as project_worktree
         FROM session s
         LEFT JOIN project p ON s.project_id = p.id
         "
+        }
+        // Discovery rejects a database with neither table set, so this is unreachable;
+        // the legacy query keeps it harmless if that ever changes.
+        Schema {
+            modern: false,
+            legacy: false,
+        } => {
+            "
+        SELECT s.id, s.parent_id, s.title, s.time_created, s.time_updated, s.time_archived,
+               p.name as project_name, p.worktree as project_worktree
+        FROM session s
+        LEFT JOIN project p ON s.project_id = p.id
+        "
+        }
     }
 }
 
-fn messages_sql(modern: bool) -> &'static str {
-    if modern {
-        "
+fn messages_sql(schema: Schema) -> &'static str {
+    match schema {
+        Schema {
+            modern: true,
+            legacy: true,
+        } => {
+            "
         SELECT session_id, type AS role, data
         FROM session_message
         WHERE type IN ('assistant', 'compaction', 'user')
@@ -148,11 +194,35 @@ fn messages_sql(modern: bool) -> &'static str {
         FROM message
         WHERE id NOT IN (SELECT id FROM session_message)
         "
-    } else {
+        }
+        Schema {
+            modern: true,
+            legacy: false,
+        } => {
+            "
+        SELECT session_id, type AS role, data
+        FROM session_message
+        WHERE type IN ('assistant', 'compaction', 'user')
         "
+        }
+        Schema {
+            modern: false,
+            legacy: true,
+        } => {
+            "
         SELECT session_id, NULL AS role, data
         FROM message
         "
+        }
+        Schema {
+            modern: false,
+            legacy: false,
+        } => {
+            "
+        SELECT session_id, NULL AS role, data
+        FROM message
+        "
+        }
     }
 }
 
@@ -169,10 +239,10 @@ struct SqliteMessageLoad {
 fn load_messages_sqlite(
     conn: &rusqlite::Connection,
     sessions: &BTreeMap<&str, &SessionRow>,
-    modern: bool,
+    schema: Schema,
 ) -> Result<SqliteMessageLoad> {
     let mut stmt = conn
-        .prepare(messages_sql(modern))
+        .prepare(messages_sql(schema))
         .map_err(Error::database_query)?;
 
     let mut messages = Vec::new();
@@ -393,6 +463,52 @@ mod tests {
         assert_eq!(event.tokens.total(), 33);
         assert_eq!(event.model_id, "claude-sonnet-4.5");
         assert_eq!(event.provider_id.as_deref(), Some("anthropic"));
+    }
+
+    #[test]
+    fn reads_a_database_that_has_only_the_modern_tables() {
+        // A fresh OpenCode install has session_v2 and session_message and no legacy pair.
+        // Queries that name the legacy tables must not be issued at all.
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let db_path = std::env::temp_dir().join(format!("oc-stats-modern-only-{nonce}.db"));
+        let conn = Connection::open(&db_path).unwrap();
+
+        conn.execute_batch(
+            "
+            CREATE TABLE project (id TEXT PRIMARY KEY, name TEXT, worktree TEXT);
+            CREATE TABLE session_v2 (
+                id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, title TEXT,
+                time_created INTEGER, time_updated INTEGER, time_archived INTEGER
+            );
+            CREATE TABLE session_message (
+                id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER,
+                time_created INTEGER, time_updated INTEGER, data TEXT
+            );
+            INSERT INTO project (id, name, worktree) VALUES ('proj_1', 'fresh', '/tmp/fresh');
+            INSERT INTO session_v2 (id, project_id, title, time_created, time_updated)
+                VALUES ('ses_fresh', 'proj_1', 'Fresh install', 1710000000000, 1710000001000);
+            ",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_message (id, session_id, type, seq, data) VALUES ('msg_1', 'ses_fresh', 'assistant', 1, ?1)",
+            [r#"{"model":{"providerID":"openai","id":"fresh-model"},"cost":0.25,"tokens":{"input":100,"output":10,"cache":{"read":0,"write":0}},"time":{"created":1710000000000,"completed":1710000001000}}"#],
+        )
+        .unwrap();
+        drop(conn);
+
+        let data = load_from_sqlite(&db_path).unwrap();
+
+        assert_eq!(data.events.len(), 1);
+        assert_eq!(data.messages.len(), 1);
+        assert_eq!(data.events[0].model_id, "fresh-model");
+        assert_eq!(data.events[0].provider_id.as_deref(), Some("openai"));
+        assert_eq!(data.session_records.len(), 1);
+
+        let _ = fs::remove_file(db_path);
     }
 
     #[test]
