@@ -121,7 +121,7 @@ cargo install opencode-stats
 
 Pre-built archives are published by **upstream** on the [Cateds/opencode-stats releases page](https://github.com/Cateds/opencode-stats/releases); they contain upstream's build, not this fork's. To run this fork, install with `cargo install --git` above or build from source.
 
-The release workflow builds for:
+Upstream's archives cover:
 
 - Windows `x86_64-pc-windows-msvc`
 - macOS `x86_64-apple-darwin`
