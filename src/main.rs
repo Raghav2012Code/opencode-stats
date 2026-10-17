@@ -306,6 +306,24 @@ mod tests {
     }
 
     #[test]
+    fn the_database_error_reads_as_a_single_line() {
+        let err = crate::db::errors::Error::database_not_found(vec![PathBuf::from(
+            r"C:\nope\missing.db",
+        )]);
+        let message = format!("error: {err}");
+
+        assert_eq!(
+            message.lines().count(),
+            1,
+            "the stats surface prints exactly one line: {message}"
+        );
+        assert!(message.contains(r"C:\nope\missing.db"));
+        // `{err:#}` is what the interactive report uses; it folds in the cause chain and
+        // is deliberately not the formatter for scripted output.
+        assert!(format!("error: {err:#}").lines().count() >= 1);
+    }
+
+    #[test]
     fn stats_content_matches_the_serializers() {
         let snapshot = empty_snapshot();
 
