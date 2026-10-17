@@ -46,8 +46,7 @@ The built-in `dark` and `light` theme names always exist, even if you do not cre
 
 ## Related Files
 
-- Theme index: `~/.config/oc-stats/themes.toml`
-- Theme overrides: `~/.config/oc-stats/themes/*.toml`
+- Themes: `~/.config/oc-stats/themes/*.toml`
 - Pricing cache: `~/.cache/oc-stats/models.json`
 
 For theme file format details, see `docs/themes.md`.

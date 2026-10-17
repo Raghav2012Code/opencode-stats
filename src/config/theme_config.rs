@@ -16,31 +16,25 @@ pub struct ThemeCatalog {
 
 impl ThemeCatalog {
     pub fn load() -> Result<Self> {
+        match config::themes_dir_path() {
+            Some(dir) => Self::load_from_dir(&dir),
+            None => Ok(Self {
+                themes: builtin_themes(),
+            }),
+        }
+    }
+
+    /// The built-in themes, overridden by the theme files in `dir`. A theme's name is its
+    /// file name, and a file wins over a built-in with the same name. The directory need
+    /// not exist, in which case only the built-ins are loaded.
+    pub fn load_from_dir(dir: &Path) -> Result<Self> {
         let mut themes = builtin_themes();
 
-        if let Some(index_path) = config::themes_index_path()
-            && index_path.exists()
-        {
-            let index = read_toml::<ThemesIndexFile>(&index_path)?;
-            for entry in index.theme {
-                let key = normalize_theme_name(&entry.name)?;
-                themes.insert(
-                    key,
-                    NamedTheme {
-                        kind: entry.theme.kind,
-                        theme: entry.theme.into_runtime_theme()?,
-                    },
-                );
-            }
-        }
-
-        if let Some(theme_dir) = config::themes_dir_path()
-            && theme_dir.exists()
-        {
-            let mut entries: Vec<_> = std::fs::read_dir(&theme_dir)
-                .map_err(|e| Error::theme_read(&theme_dir, e))?
+        if dir.exists() {
+            let mut entries: Vec<_> = std::fs::read_dir(dir)
+                .map_err(|e| Error::theme_read(dir, e))?
                 .collect::<std::io::Result<_>>()
-                .map_err(|e| Error::theme_read(&theme_dir, e))?;
+                .map_err(|e| Error::theme_read(dir, e))?;
 
             entries.sort_by_key(|e| e.path());
 
@@ -70,20 +64,6 @@ impl ThemeCatalog {
     pub fn names(&self) -> Vec<&str> {
         self.themes.keys().map(String::as_str).collect()
     }
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct ThemesIndexFile {
-    theme: Vec<ThemeEntry>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ThemeEntry {
-    name: String,
-    #[serde(flatten)]
-    theme: ThemeContent,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -216,8 +196,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{ThemeContent, ThemeKind, parse_hex_color};
+    use super::{ThemeCatalog, ThemeContent, ThemeKind, parse_hex_color};
+    use crate::test_support::unique_temp_dir;
     use ratatui::style::Color;
+    use std::path::Path;
 
     #[test]
     fn parses_hex_colors() {
@@ -263,5 +245,90 @@ model = ["#BF616A", "#D08770", "#EBCB8B", "#A3BE8C", "#88C0D0", "#81A1C1", "#B48
             value.into_runtime_theme().unwrap().foreground,
             Color::Rgb(229, 233, 240)
         );
+    }
+
+    /// A theme file with a chosen foreground, so a loaded catalog can be told apart.
+    fn theme_file(foreground: &str) -> String {
+        format!(
+            r##"
+type = "dark"
+
+[base]
+foreground = "{foreground}"
+muted = "#808698"
+
+[card]
+background = "#1C212B"
+border = "#78829B"
+shadow = "#000000"
+
+[accent]
+primary = "#88C0D0"
+comparison = "#B4BEFE"
+
+[tab]
+active_fg = "#000000"
+active_bg = "#88C0D0"
+
+[heatmap]
+empty = "#5E6273"
+active = "#88C0D0"
+
+[series]
+model = ["#BF616A", "#D08770", "#EBCB8B", "#A3BE8C", "#88C0D0", "#81A1C1", "#B48EAD", "#AB7967", "#5E81AC", "#8FBCBB", "#D8DEE9", "#4C566A"]
+"##
+        )
+    }
+
+    fn write_theme(dir: &Path, file_name: &str, foreground: &str) {
+        std::fs::write(dir.join(file_name), theme_file(foreground)).unwrap();
+    }
+
+    #[test]
+    fn loads_a_theme_from_the_directory_under_its_file_name() {
+        let dir = unique_temp_dir("themes-dir");
+        write_theme(&dir, "Midnight Blue.toml", "#010203");
+
+        let catalog = ThemeCatalog::load_from_dir(&dir).unwrap();
+        let loaded = catalog
+            .get("midnight blue")
+            .expect("the file name is the theme name");
+
+        assert_eq!(loaded.kind, ThemeKind::Dark);
+        assert_eq!(loaded.theme.foreground, Color::Rgb(1, 2, 3));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_directory_theme_overrides_a_built_in_of_the_same_name() {
+        let dir = unique_temp_dir("themes-override");
+        assert!(
+            ThemeCatalog::load_from_dir(&dir)
+                .unwrap()
+                .get("dark")
+                .is_some(),
+            "the built-in themes are there without any files"
+        );
+
+        write_theme(&dir, "dark.toml", "#040506");
+
+        let catalog = ThemeCatalog::load_from_dir(&dir).unwrap();
+        assert_eq!(
+            catalog.get("dark").unwrap().theme.foreground,
+            Color::Rgb(4, 5, 6),
+            "the file wins over the built-in"
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_missing_directory_leaves_the_built_in_themes() {
+        let dir = unique_temp_dir("themes-absent");
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        let catalog = ThemeCatalog::load_from_dir(&dir).unwrap();
+        assert!(catalog.get("dark").is_some() && catalog.get("light").is_some());
     }
 }

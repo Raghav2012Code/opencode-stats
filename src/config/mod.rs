@@ -12,10 +12,6 @@ pub fn config_path() -> Option<PathBuf> {
     config_root().map(|path| path.join("config.toml"))
 }
 
-pub fn themes_index_path() -> Option<PathBuf> {
-    config_root().map(|path| path.join("themes.toml"))
-}
-
 pub fn themes_dir_path() -> Option<PathBuf> {
     config_root().map(|path| path.join("themes"))
 }
