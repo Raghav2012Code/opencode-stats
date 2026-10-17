@@ -18,7 +18,7 @@ use crate::config::app_config::AppConfig;
 use crate::config::theme_config::ThemeCatalog;
 use crate::db::models::InputOptions;
 use crate::db::queries::load_app_data;
-use crate::stats_output::{StatsFormat, format_stats_line};
+use crate::stats_output::{StatsFormat, format_stats_line, stats_json};
 use crate::ui::app::{App, print_exit_art};
 use crate::ui::theme::{Theme, ThemeKind, ThemeMode};
 use crate::utils::pricing::ZeroCostBehavior;
@@ -154,6 +154,9 @@ async fn run_command(
             );
             match format {
                 StatsFormat::Line => println!("{}", format_stats_line(&snapshot, range)),
+                StatsFormat::Json => {
+                    println!("{}", serde_json::to_string(&stats_json(&snapshot, range))?)
+                }
             }
             Ok(())
         }
