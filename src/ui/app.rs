@@ -374,22 +374,30 @@ impl App {
             segment_span("Sessions", self.page == Page::Sessions, theme),
         ];
         // The overview is all time, so it shows no range selector to click through. The
-        // labels are the short names `stats --range` uses, because the full strip has to
-        // fit the content width: with "7 Days" and "30 Days" it ran one column past and
-        // clipped the last label.
+        // labels are the short names `stats --range` uses, and the strip is only drawn in
+        // full when it fits: a narrow terminal falls back to the active range on its own,
+        // because a clipped label reads as a missing range.
         if self.page.uses_range() {
-            spans.push(segment_span(" All ", self.range == TimeRange::All, theme));
-            spans.push(segment_span("Today", self.range == TimeRange::Today, theme));
-            spans.push(segment_span(
-                "7d",
-                self.range == TimeRange::Last7Days,
-                theme,
-            ));
-            spans.push(segment_span(
-                "30d",
-                self.range == TimeRange::Last30Days,
-                theme,
-            ));
+            let ranges = [
+                (" All ", TimeRange::All),
+                ("Today", TimeRange::Today),
+                ("7d", TimeRange::Last7Days),
+                ("30d", TimeRange::Last30Days),
+            ];
+            let used: usize = spans.iter().map(|span| span.content.chars().count()).sum();
+            // `segment_span` renders one space either side of the label.
+            let needed: usize = ranges
+                .iter()
+                .map(|(label, _)| label.chars().count() + 2)
+                .sum();
+
+            if used + needed <= area.width as usize {
+                for (label, range) in ranges {
+                    spans.push(segment_span(label, self.range == range, theme));
+                }
+            } else if let Some((label, _)) = ranges.iter().find(|(_, range)| *range == self.range) {
+                spans.push(segment_span(label, true, theme));
+            }
         }
 
         frame.render_widget(
@@ -991,6 +999,39 @@ mod tests {
             app.range,
             TimeRange::Today,
             "'2' selects Today on a list page"
+        );
+    }
+
+    #[test]
+    fn the_range_strip_never_clips_in_a_narrow_terminal() {
+        // 70 columns is the content width; below that the full strip cannot fit, so the
+        // active range is shown alone rather than a cut-off label.
+        let app = app_with(Page::Models, TimeRange::Last30Days, vec![test_event()]);
+
+        let wide = frame_text(&app, 100, 24);
+        let wide_header = wide
+            .lines()
+            .find(|line| line.contains("Overview"))
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            wide_header.contains("All") && wide_header.contains("30d"),
+            "the full strip fits the content width: {wide_header}"
+        );
+
+        let narrow = frame_text(&app, 50, 24);
+        let narrow_header = narrow
+            .lines()
+            .find(|line| line.contains("Overview"))
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            narrow_header.contains("30d"),
+            "the selected range is still readable when narrow: {narrow_header}"
+        );
+        assert!(
+            !narrow_header.contains("Today"),
+            "the other ranges step aside rather than clip: {narrow_header}"
         );
     }
 
