@@ -310,7 +310,7 @@ fn build_x_labels(days: &[NaiveDate], range: TimeRange) -> Vec<String> {
     }
 
     match range {
-        TimeRange::Last7Days => days.iter().map(format_label).collect(),
+        TimeRange::Last7Days | TimeRange::Today => days.iter().map(format_label).collect(),
         TimeRange::Last30Days => {
             let step = 5;
             let last = days.len() - 1;

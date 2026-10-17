@@ -18,6 +18,7 @@ use crate::analytics::{AnalyticsSnapshot, build_snapshot};
 use crate::cache::models_cache::{PricingCatalog, refresh_remote_models};
 use crate::db::models::{AppData, InputOptions};
 use crate::db::queries::load_app_data;
+use crate::stats_output::{stats_csv, stats_json};
 use crate::ui::export::render_share_card;
 use crate::ui::models::MAX_QUERY_LEN;
 use crate::ui::models::{SearchState, render_models, render_providers};
@@ -31,7 +32,8 @@ use crate::utils::time::TimeRange;
 const VIEWPORT_HEIGHT: u16 = 23;
 const STATUS_TTL: Duration = Duration::from_secs(3);
 const TICK_TIME_MS: u16 = 200;
-const DEFAULT_HINTS: &str = "<tab> pages | r cycle | R reload | f find | q quit";
+/// Fits the 70-column footer beside the `Loaded HH:MM:SS | ` prefix: keep it short.
+const DEFAULT_HINTS: &str = "tab pages|r/R range|f find|^s share|e export|q quit";
 
 #[derive(Clone, Debug)]
 struct StatusMessage {
@@ -299,6 +301,7 @@ impl App {
             segment_span("Providers", self.page == Page::Providers, theme),
             ratatui::text::Span::raw("    "),
             segment_span(" All ", self.range == TimeRange::All, theme),
+            segment_span("Today", self.range == TimeRange::Today, theme),
             segment_span("7 Days", self.range == TimeRange::Last7Days, theme),
             segment_span("30 Days", self.range == TimeRange::Last30Days, theme),
         ]);
@@ -415,6 +418,7 @@ impl App {
             {
                 self.enter_search();
             }
+            KeyCode::Char('e') => self.export_current_view(),
             KeyCode::Char(value) => {
                 if let Some(range) = TimeRange::from_shortcut(value) {
                     self.range = range;
@@ -479,6 +483,25 @@ impl App {
         let mut terminal = Terminal::new(backend)?;
         let frame = terminal.draw(|frame| self.render(frame))?;
         Ok(frame.buffer.clone())
+    }
+
+    /// Writes what is on screen — overview, model rows, provider rows and the heatmap
+    /// window, for the selected range — to timestamped CSV and JSON files in the working
+    /// directory, reusing the `stats` command's serializers so the two can never disagree.
+    /// A failed write keeps the dashboard as it is and reports the failure.
+    fn export_current_view(&mut self) {
+        let timestamp = chrono::Local::now().timestamp();
+        let mut written = Vec::new();
+        for (filename, content) in export_documents(&self.snapshot, self.range, timestamp) {
+            match std::fs::write(&filename, content) {
+                Ok(()) => written.push(filename),
+                Err(err) => {
+                    self.set_status(format!("Export failed for {filename}: {err}"));
+                    return;
+                }
+            }
+        }
+        self.set_status(format!("Exported {}", written.join(", ")));
     }
 
     fn copy_current_page(&mut self) {
@@ -560,6 +583,24 @@ fn copy_text_to_clipboard(summary: &str) -> Result<()> {
     let mut clipboard = arboard::Clipboard::new()?;
     clipboard.set_text(summary.to_string())?;
     Ok(())
+}
+
+/// The files [`App::export_current_view`] writes: `(filename, content)` pairs with
+/// timestamped names, kept pure so tests can assert on the content without touching disk.
+fn export_documents(
+    snapshot: &AnalyticsSnapshot,
+    range: TimeRange,
+    timestamp: i64,
+) -> Vec<(String, String)> {
+    let prefix = format!("oc-stats-{}-{timestamp}", range.cli_name());
+    vec![
+        (format!("{prefix}.csv"), stats_csv(snapshot, range)),
+        (
+            format!("{prefix}.json"),
+            serde_json::to_string_pretty(&stats_json(snapshot, range))
+                .unwrap_or_else(|_| "{}".to_string()),
+        ),
+    ]
 }
 
 fn copy_image_to_clipboard(buffer: ratatui::buffer::Buffer, theme: Theme) -> Result<()> {
@@ -760,5 +801,68 @@ mod tests {
         // With a database present this reloads real data, without one it reports the
         // failure; either way the key reaches reload and the footer keeps its timestamp.
         assert!(app.footer_text().contains("Loaded"));
+    }
+
+    use crate::analytics::build_snapshot;
+    use std::path::PathBuf;
+
+    fn empty_snapshot() -> crate::analytics::AnalyticsSnapshot {
+        let data = AppData {
+            events: Vec::new(),
+            messages: Vec::new(),
+            session_records: Vec::new(),
+            import_stats: ImportStats::default(),
+        };
+        let pricing = PricingCatalog {
+            models: BTreeMap::new(),
+            cache_path: PathBuf::from("/tmp/models.json"),
+            refresh_needed: false,
+            availability: PricingAvailability::Empty,
+            load_notice: None,
+        };
+        build_snapshot(&data, &pricing, TimeRange::All, ZeroCostBehavior::KeepZero)
+    }
+
+    #[test]
+    fn export_uses_timestamped_names_for_both_formats() {
+        let snapshot = empty_snapshot();
+        let documents = export_documents(&snapshot, TimeRange::Last7Days, 1_700_000_000);
+
+        assert_eq!(documents.len(), 2);
+        assert_eq!(documents[0].0, "oc-stats-7d-1700000000.csv");
+        assert_eq!(documents[1].0, "oc-stats-7d-1700000000.json");
+    }
+
+    #[test]
+    fn export_content_matches_the_stats_serializers() {
+        let snapshot = empty_snapshot();
+        let documents = export_documents(&snapshot, TimeRange::All, 1_700_000_000);
+
+        assert_eq!(
+            documents[0].1,
+            crate::stats_output::stats_csv(&snapshot, TimeRange::All),
+        );
+        assert!(documents[1].1.contains("\"range\": \"all\""));
+
+        let dir = std::env::temp_dir().join(format!(
+            "oc-stats-export-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (filename, content) in &documents {
+            std::fs::write(dir.join(filename), content).unwrap();
+        }
+        assert_eq!(
+            std::fs::read_to_string(dir.join(&documents[0].0)).unwrap(),
+            documents[0].1,
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join(&documents[1].0)).unwrap(),
+            documents[1].1,
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
