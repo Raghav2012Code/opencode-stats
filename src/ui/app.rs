@@ -98,6 +98,13 @@ impl Page {
     pub fn names() -> Vec<&'static str> {
         Self::ALL.into_iter().map(Self::name).collect()
     }
+
+    /// Whether the time range applies here. The overview is the whole picture by design:
+    /// it always shows all time, so it offers no range selector and ignores the range keys.
+    /// The list pages are the ones you narrow down.
+    pub fn uses_range(self) -> bool {
+        !matches!(self, Self::Overview)
+    }
 }
 
 pub struct App {
@@ -130,7 +137,13 @@ impl App {
         page: Page,
         range: TimeRange,
     ) -> Self {
-        let snapshot = build_snapshot(&data, &pricing, range, zero_cost_behavior);
+        // The overview is always all time; the chosen range applies to the list pages.
+        let initial_range = if page.uses_range() {
+            range
+        } else {
+            TimeRange::All
+        };
+        let snapshot = build_snapshot(&data, &pricing, initial_range, zero_cost_behavior);
         let (sender, receiver) = mpsc::unbounded_channel();
         let (clipboard_sender, clipboard_updates) = mpsc::unbounded_channel();
         if pricing.refresh_needed {
@@ -247,9 +260,31 @@ impl App {
         self.snapshot = build_snapshot(
             &self.data,
             &self.pricing,
-            self.range,
+            self.effective_range(),
             self.zero_cost_behavior,
         );
+    }
+
+    /// The range the current page is drawn with. The overview ignores the selection and is
+    /// always all time; every other page uses what the user picked.
+    fn effective_range(&self) -> TimeRange {
+        if self.page.uses_range() {
+            self.range
+        } else {
+            TimeRange::All
+        }
+    }
+
+    /// Moves to a page, rebuilding when that page changes which range applies, and keeping
+    /// the range the user picked for the pages that use it.
+    fn set_page(&mut self, page: Page) {
+        let before = self.effective_range();
+        self.page = page;
+        self.search = None;
+        self.focused_index = 0;
+        if self.effective_range() != before {
+            self.recompute();
+        }
     }
 
     fn reload(&mut self) {
@@ -332,19 +367,35 @@ impl App {
 
     fn render_header(&self, frame: &mut Frame<'_>, area: ratatui::layout::Rect, theme: &Theme) {
         let content = area;
-        let line = ratatui::text::Line::from(vec![
+        let mut spans = vec![
             segment_span("Overview", self.page == Page::Overview, theme),
             segment_span("Models", self.page == Page::Models, theme),
             segment_span("Providers", self.page == Page::Providers, theme),
             segment_span("Sessions", self.page == Page::Sessions, theme),
-            ratatui::text::Span::raw("    "),
-            segment_span(" All ", self.range == TimeRange::All, theme),
-            segment_span("Today", self.range == TimeRange::Today, theme),
-            segment_span("7 Days", self.range == TimeRange::Last7Days, theme),
-            segment_span("30 Days", self.range == TimeRange::Last30Days, theme),
-        ]);
+        ];
+        // The overview is all time, so it shows no range selector to click through. The
+        // labels are the short names `stats --range` uses, because the full strip has to
+        // fit the content width: with "7 Days" and "30 Days" it ran one column past and
+        // clipped the last label.
+        if self.page.uses_range() {
+            spans.push(segment_span(" All ", self.range == TimeRange::All, theme));
+            spans.push(segment_span("Today", self.range == TimeRange::Today, theme));
+            spans.push(segment_span(
+                "7d",
+                self.range == TimeRange::Last7Days,
+                theme,
+            ));
+            spans.push(segment_span(
+                "30d",
+                self.range == TimeRange::Last30Days,
+                theme,
+            ));
+        }
 
-        frame.render_widget(ratatui::widgets::Paragraph::new(line), content);
+        frame.render_widget(
+            ratatui::widgets::Paragraph::new(ratatui::text::Line::from(spans)),
+            content,
+        );
     }
 
     fn render_footer(&self, frame: &mut Frame<'_>, area: ratatui::layout::Rect, theme: &Theme) {
@@ -426,18 +477,17 @@ impl App {
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
             KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
-                self.search = None;
-                self.page = self.page.next();
-                self.focused_index = 0;
+                let next = self.page.next();
+                self.set_page(next);
             }
             KeyCode::Left | KeyCode::Char('h') => {
-                self.search = None;
-                self.page = self.page.previous();
-                self.focused_index = 0;
+                let previous = self.page.previous();
+                self.set_page(previous);
             }
             KeyCode::Down | KeyCode::Char('j') => self.advance_focus(1),
             KeyCode::Up | KeyCode::Char('k') => self.advance_focus(-1),
-            KeyCode::Char('r') => {
+            // The overview shows all time, so it has no range to cycle or set.
+            KeyCode::Char('r') if self.page.uses_range() => {
                 self.range = self.range.cycle();
                 self.focused_index = 0;
                 self.search = None;
@@ -461,7 +511,9 @@ impl App {
             }
             KeyCode::Char('e') => self.export_current_view(),
             KeyCode::Char(value) => {
-                if let Some(range) = TimeRange::from_shortcut(value) {
+                if self.page.uses_range()
+                    && let Some(range) = TimeRange::from_shortcut(value)
+                {
                     self.range = range;
                     self.focused_index = 0;
                     self.search = None;
@@ -554,7 +606,9 @@ impl App {
     fn export_current_view(&mut self) {
         let timestamp = chrono::Local::now().timestamp();
         let mut written = Vec::new();
-        for (filename, content) in export_documents(&self.snapshot, self.range, timestamp) {
+        for (filename, content) in
+            export_documents(&self.snapshot, self.effective_range(), timestamp)
+        {
             match std::fs::write(&filename, content) {
                 Ok(()) => written.push(filename),
                 Err(err) => {
@@ -601,7 +655,10 @@ impl App {
             buffer: self.capture_current_page_buffer()?,
             theme: self.theme.clone(),
             summary: self.current_page_summary(),
-            png_path: std::path::PathBuf::from(share_card_file_name(self.range, timestamp)),
+            png_path: std::path::PathBuf::from(share_card_file_name(
+                self.effective_range(),
+                timestamp,
+            )),
         })
     }
 
@@ -609,7 +666,7 @@ impl App {
         match self.page {
             Page::Overview => format!(
                 "oc-stats {}\nTokens: {}\nCost: {}\nSessions: {}\nMessages: {}\nPrompts: {}",
-                self.range.label(),
+                self.effective_range().label(),
                 self.snapshot.overview.total_tokens,
                 format_price_summary(&self.snapshot.overview.total_cost),
                 self.snapshot.overview.sessions,
@@ -808,6 +865,151 @@ mod tests {
         }
     }
 
+    fn app_with(page: Page, range: TimeRange, events: Vec<UsageEvent>) -> App {
+        App::new(
+            test_data(events),
+            test_pricing(),
+            Theme::builtin_dark(),
+            ZeroCostBehavior::KeepZero,
+            no_input_options(),
+            page,
+            range,
+        )
+    }
+
+    fn frame_text(app: &App, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer.cell((x, y)).map(|cell| cell.symbol()).unwrap_or(" "))
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn an_event_dated(days_ago: i64) -> UsageEvent {
+        let when = Local::now() - chrono::Duration::days(days_ago);
+        let mut event = test_event();
+        event.created_at = Some(when);
+        event.session_started_at = Some(when);
+        event
+    }
+
+    #[test]
+    fn the_overview_offers_no_range_selector_and_the_list_pages_do() {
+        let header_line = |app: &App| {
+            let frame = frame_text(app, 100, 24);
+            frame
+                .lines()
+                .find(|line| line.contains("Overview"))
+                .unwrap_or_default()
+                .to_string()
+        };
+
+        let overview = app_with(Page::Overview, TimeRange::Last7Days, vec![test_event()]);
+        let header = header_line(&overview);
+
+        assert!(header.contains("Overview"), "{header}");
+        for range in ["Today", "7d", "30d"] {
+            assert!(
+                !header.contains(range),
+                "the overview has no range selector, found {range}: {header}"
+            );
+        }
+
+        for page in [Page::Models, Page::Providers, Page::Sessions] {
+            let app = app_with(page, TimeRange::Last7Days, vec![test_event()]);
+            let header = header_line(&app);
+            assert!(
+                header.contains("7d") && header.contains("30d"),
+                "{page:?} keeps its full range selector, nothing clipped: {header}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_overview_is_all_time_whatever_the_selected_range_is() {
+        // Two events, one well outside the 7-day window.
+        let events = vec![an_event_dated(40), an_event_dated(0)];
+
+        let mut app = app_with(Page::Models, TimeRange::Last7Days, events);
+        assert_eq!(
+            app.snapshot.overview.total_tokens, 30,
+            "the list pages obey the selected range"
+        );
+
+        app.set_page(Page::Overview);
+        assert_eq!(app.range, TimeRange::Last7Days, "the choice is remembered");
+        assert_eq!(
+            app.effective_range(),
+            TimeRange::All,
+            "the overview is always all time"
+        );
+        assert_eq!(
+            app.snapshot.overview.total_tokens, 60,
+            "the overview shows the old event too"
+        );
+
+        app.set_page(Page::Models);
+        assert_eq!(
+            app.snapshot.overview.total_tokens, 30,
+            "returning to a list page applies the remembered range again"
+        );
+    }
+
+    #[test]
+    fn the_range_keys_do_nothing_on_the_overview_and_work_on_the_list_pages() {
+        let key = |code: KeyCode| KeyEvent::new(code, KeyModifiers::NONE);
+
+        let mut app = app_with(Page::Overview, TimeRange::Last7Days, vec![test_event()]);
+        app.handle_key(key(KeyCode::Char('r')));
+        assert_eq!(
+            app.range,
+            TimeRange::Last7Days,
+            "'r' is not a range toggle here"
+        );
+        app.handle_key(key(KeyCode::Char('3')));
+        assert_eq!(
+            app.range,
+            TimeRange::Last7Days,
+            "'3' is not a range shortcut here"
+        );
+
+        app.set_page(Page::Providers);
+        app.handle_key(key(KeyCode::Char('r')));
+        assert_eq!(
+            app.range,
+            TimeRange::Last30Days,
+            "'r' cycles on a list page"
+        );
+        app.handle_key(key(KeyCode::Char('2')));
+        assert_eq!(
+            app.range,
+            TimeRange::Today,
+            "'2' selects Today on a list page"
+        );
+    }
+
+    #[test]
+    fn the_share_and_export_of_the_overview_are_all_time() {
+        let app = app_with(Page::Overview, TimeRange::Last7Days, vec![test_event()]);
+
+        assert_eq!(app.effective_range(), TimeRange::All);
+        assert!(
+            share_card_file_name(app.effective_range(), 1_700_000_000).starts_with("oc-stats-all-"),
+            "the overview's artifacts are named for all time"
+        );
+        assert!(
+            app.current_page_summary().starts_with("oc-stats All time"),
+            "and the shared summary says all time: {}",
+            app.current_page_summary()
+        );
+    }
+
     #[test]
     fn the_configured_page_is_the_one_the_first_frame_draws() {
         // State says which page is open; the drawn frame proves that is the page on
@@ -841,7 +1043,7 @@ mod tests {
             "the session detail pane must be the one drawn: {text}"
         );
         assert!(
-            text.contains("7 Days"),
+            text.contains("7d"),
             "the configured range must be the one highlighted: {text}"
         );
     }
