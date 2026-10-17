@@ -35,8 +35,18 @@ const STATUS_TTL: Duration = Duration::from_secs(3);
 /// flash used for passing notices.
 const SHARE_STATUS_TTL: Duration = Duration::from_secs(10);
 const TICK_TIME_MS: u16 = 200;
-/// Fits the 70-column footer beside the `Loaded HH:MM:SS | ` prefix: keep it short.
-const DEFAULT_HINTS: &str = "tab pages|r/R range|f find|s/^s share|e export|q quit";
+/// Footer hints as key and action. Drawn in this order and dropped from the right when the
+/// footer is too narrow, so a hint is never cut in half.
+const FOOTER_HINTS: &[(&str, &str)] = &[
+    ("tab", "pages"),
+    ("r/R", "range"),
+    ("f", "find"),
+    ("s/^s", "share"),
+    ("e", "export"),
+    ("q", "quit"),
+];
+/// What sits at the right end of the rule above the content.
+const LOADED_LABEL: &str = "Loaded ";
 
 #[derive(Clone, Debug)]
 struct StatusMessage {
@@ -326,8 +336,7 @@ impl App {
             .map(|area| Block::new().padding(Padding::horizontal(1)).inner(area));
 
         frame.render_widget(
-            ratatui::widgets::Paragraph::new("─".repeat(CONTENT_WIDTH as _))
-                .style(theme.muted_style()),
+            ratatui::widgets::Paragraph::new(self.divider_line(divider.width, theme)),
             divider,
         );
 
@@ -407,19 +416,29 @@ impl App {
     }
 
     fn render_footer(&self, frame: &mut Frame<'_>, area: ratatui::layout::Rect, theme: &Theme) {
-        frame.render_widget(
-            ratatui::widgets::Paragraph::new(self.footer_text()).style(theme.muted_style()),
-            area,
-        );
+        let line = match &self.status_message {
+            Some(status) => ratatui::text::Line::from(ratatui::text::Span::styled(
+                status.text.clone(),
+                theme.muted_style(),
+            )),
+            None => footer_hints(area.width, theme),
+        };
+
+        frame.render_widget(ratatui::widgets::Paragraph::new(line), area);
     }
 
-    fn footer_text(&self) -> String {
-        let base = self
-            .status_message
-            .as_ref()
-            .map(|status| status.text.as_str())
-            .unwrap_or(DEFAULT_HINTS);
-        format!("Loaded {} | {base}", self.last_read.format("%H:%M:%S"))
+    /// The rule under the title, with when the data was last read at its right end. Keeping
+    /// the timestamp here leaves the footer free for hints and status, and it never has to
+    /// be shortened to make room for them.
+    fn divider_line(&self, width: u16, theme: &Theme) -> ratatui::text::Line<'static> {
+        let stamp = format!("{LOADED_LABEL}{}", self.last_read.format("%H:%M:%S"));
+        let stamp_width = stamp.chars().count() + 2;
+        let rule_width = (width as usize).saturating_sub(stamp_width);
+
+        ratatui::text::Line::from(vec![
+            ratatui::text::Span::styled("─".repeat(rule_width), theme.muted_style()),
+            ratatui::text::Span::styled(format!("  {stamp}"), theme.muted_style()),
+        ])
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
@@ -700,6 +719,37 @@ impl App {
                 .join("\n"),
         }
     }
+}
+
+/// The hint row: each key in the foreground colour and its action muted, separated by dots.
+/// Hints that do not fit are dropped rather than clipped.
+fn footer_hints(width: u16, theme: &Theme) -> ratatui::text::Line<'static> {
+    use ratatui::style::Style;
+    use ratatui::text::Span;
+
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut used = 0usize;
+
+    for (index, (key, action)) in FOOTER_HINTS.iter().enumerate() {
+        let separator = if index == 0 { "" } else { " · " };
+        let segment_width =
+            separator.chars().count() + key.chars().count() + 1 + action.chars().count();
+        if used + segment_width > width as usize {
+            break;
+        }
+        used += segment_width;
+
+        if !separator.is_empty() {
+            spans.push(Span::styled(separator.to_string(), theme.muted_style()));
+        }
+        spans.push(Span::styled(
+            (*key).to_string(),
+            Style::default().fg(theme.foreground),
+        ));
+        spans.push(Span::styled(format!(" {action}"), theme.muted_style()));
+    }
+
+    ratatui::text::Line::from(spans)
 }
 
 fn summary_lines(rows: &[UsageRow]) -> String {
@@ -1036,6 +1086,70 @@ mod tests {
     }
 
     #[test]
+    fn the_footer_hints_are_spaced_and_never_clipped() {
+        let app = app_with(Page::Overview, TimeRange::All, vec![test_event()]);
+
+        let footer = |width: u16| {
+            frame_text(&app, width, 24)
+                .lines()
+                .last()
+                .unwrap_or_default()
+                .to_string()
+        };
+
+        // Wide: every hint, separated rather than run together.
+        let wide = footer(100);
+        for hint in [
+            "tab pages",
+            "r/R range",
+            "f find",
+            "s/^s share",
+            "e export",
+            "q quit",
+        ] {
+            assert!(wide.contains(hint), "missing {hint:?} in {wide:?}");
+        }
+        assert!(wide.contains(" · "), "hints are separated: {wide:?}");
+
+        // Narrow: hints drop off the end instead of being cut in half.
+        let narrow = footer(40);
+        assert!(narrow.contains("tab pages"), "{narrow:?}");
+        assert!(!narrow.contains("qui"), "no half-drawn hint: {narrow:?}");
+        for hint in FOOTER_HINTS {
+            let drawn = narrow.contains(&format!("{} {}", hint.0, hint.1));
+            let action_only = narrow.contains(hint.1);
+            assert!(
+                drawn || !action_only,
+                "{} appears without its key: {narrow:?}",
+                hint.1
+            );
+        }
+    }
+
+    #[test]
+    fn the_read_time_rides_the_rule_and_leaves_the_footer_to_the_hints() {
+        let app = app_with(Page::Models, TimeRange::All, vec![test_event()]);
+        let frame = frame_text(&app, 100, 24);
+        let mut lines = frame.lines();
+
+        let rule = lines.next().unwrap_or_default().to_string();
+        let footer = lines.last().unwrap_or_default().to_string();
+
+        assert!(
+            rule.contains("Loaded "),
+            "the rule carries the time: {rule:?}"
+        );
+        assert!(
+            rule.matches('─').count() < rule.chars().count(),
+            "the rule is shortened to make room rather than overlapping: {rule:?}"
+        );
+        assert!(
+            !footer.contains("Loaded"),
+            "the footer is left to the hints: {footer:?}"
+        );
+    }
+
+    #[test]
     fn the_share_and_export_of_the_overview_are_all_time() {
         let app = app_with(Page::Overview, TimeRange::Last7Days, vec![test_event()]);
 
@@ -1134,7 +1248,23 @@ mod tests {
         assert_eq!(app.focused_index, 0);
         assert!(app.search.is_some());
         assert!(app.last_read >= previous_read);
-        assert!(app.footer_text().contains("Loaded"));
+        let frame = frame_text(&app, 100, 24);
+        assert!(
+            frame.lines().next().unwrap_or_default().contains("Loaded"),
+            "the rule carries the read time: {frame}"
+        );
+        assert!(
+            frame.contains("Reloaded usage data from disk"),
+            "the reload notice takes the footer: {frame}"
+        );
+
+        // Once the notice expires, the hints are back in the footer.
+        app.status_message = None;
+        let frame = frame_text(&app, 100, 24);
+        assert!(
+            frame.contains("tab") && frame.contains("pages"),
+            "the hints return: {frame}"
+        );
     }
 
     #[test]
@@ -1151,9 +1281,12 @@ mod tests {
 
         assert_eq!(app.snapshot.models.len(), 1);
         assert_eq!(app.data.events.len(), 1);
-        let footer = app.footer_text();
-        assert!(footer.contains("Reload failed"), "footer was: {footer}");
-        assert!(footer.contains("Loaded"), "footer was: {footer}");
+        let frame = frame_text(&app, 100, 24);
+        assert!(frame.contains("Reload failed"), "footer was: {frame}");
+        assert!(
+            frame.lines().next().unwrap_or_default().contains("Loaded"),
+            "the read time stays on the rule: {frame}"
+        );
     }
 
     #[test]
@@ -1163,8 +1296,12 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::empty()));
 
         // With a database present this reloads real data, without one it reports the
-        // failure; either way the key reaches reload and the footer keeps its timestamp.
-        assert!(app.footer_text().contains("Loaded"));
+        // failure; either way the key reaches reload and the rule keeps its timestamp.
+        let frame = frame_text(&app, 100, 24);
+        assert!(
+            frame.lines().next().unwrap_or_default().contains("Loaded"),
+            "{frame}"
+        );
     }
 
     use crate::analytics::build_snapshot;
