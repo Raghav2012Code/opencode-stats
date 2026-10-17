@@ -408,7 +408,7 @@ fn median(values: &[f64]) -> f64 {
 mod tests {
     use super::{build_chart_for_models, build_model_chart, build_provider_chart};
     use crate::cache::models_cache::{PricingAvailability, PricingCatalog};
-    use crate::db::models::{DataSourceKind, MessageRecord, TokenUsage, UsageEvent};
+    use crate::db::models::{MessageRecord, TokenUsage, UsageEvent};
     use crate::utils::pricing::ZeroCostBehavior;
     use crate::utils::time::TimeRange;
     use chrono::{Local, NaiveDate, TimeZone};
@@ -452,7 +452,6 @@ mod tests {
             created_at: Some(created_at),
             completed_at: Some(created_at),
             stored_cost_usd: None,
-            source: DataSourceKind::Json,
         }
     }
 
@@ -465,7 +464,6 @@ mod tests {
             provider_id: Some("openai".to_string()),
             model_id: Some("gpt-5".to_string()),
             created_at: event.created_at,
-            source: DataSourceKind::Json,
         };
         let today = NaiveDate::from_ymd_opt(2026, 3, 12).unwrap();
         let pricing = empty_pricing();
@@ -526,7 +524,6 @@ mod tests {
             created_at: Some(created_at),
             completed_at: Some(created_at),
             stored_cost_usd: None,
-            source: DataSourceKind::Json,
         };
         let chart = build_chart_for_models(
             &[&event],

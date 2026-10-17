@@ -77,7 +77,7 @@ fn resolved_stored_cost(
 mod tests {
     use super::{PriceSummary, ZeroCostBehavior, update_price_summary};
     use crate::cache::models_cache::{ModelPricing, PricingAvailability, PricingCatalog};
-    use crate::db::models::{DataSourceKind, TokenUsage, UsageEvent};
+    use crate::db::models::{TokenUsage, UsageEvent};
     use chrono::{Local, TimeZone};
     use rust_decimal::Decimal;
     use std::collections::BTreeMap;
@@ -126,7 +126,6 @@ mod tests {
             created_at: Some(created_at),
             completed_at: Some(created_at),
             stored_cost_usd,
-            source: DataSourceKind::Json,
         }
     }
 

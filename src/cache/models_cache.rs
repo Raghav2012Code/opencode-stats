@@ -328,7 +328,7 @@ fn decimal_from_json(value: Option<&serde_json::Value>) -> Decimal {
 #[cfg(test)]
 mod tests {
     use super::{ModelPricing, map_models_root_to_local};
-    use crate::db::models::{DataSourceKind, TokenUsage, UsageEvent};
+    use crate::db::models::{TokenUsage, UsageEvent};
     use rust_decimal::Decimal;
     use serde_json::json;
     use std::collections::BTreeMap;
@@ -369,7 +369,6 @@ mod tests {
             created_at: None,
             completed_at: None,
             stored_cost_usd: None,
-            source: DataSourceKind::Json,
         };
         let mismatched_case = UsageEvent {
             model_id: "pro/zai-org/glm-5".to_string(),
@@ -449,7 +448,6 @@ mod tests {
             created_at: None,
             completed_at: None,
             stored_cost_usd: None,
-            source: DataSourceKind::Json,
         };
 
         assert!(catalog.lookup_for_event(&event).is_none());
@@ -490,7 +488,6 @@ mod tests {
             created_at: None,
             completed_at: None,
             stored_cost_usd: None,
-            source: DataSourceKind::Json,
         };
 
         assert!(catalog.lookup_for_event(&event).is_none());

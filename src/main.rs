@@ -31,7 +31,6 @@ async fn main() -> Result<()> {
 
     let data = load_app_data(&InputOptions {
         database_path: cli.database_path,
-        json_path: cli.json_path,
     })
     .wrap_err("failed to load OpenCode usage data")?;
 
@@ -57,13 +56,6 @@ struct CliArgs {
         help = "Path to OpenCode SQLite database file"
     )]
     database_path: Option<PathBuf>,
-
-    #[arg(
-        long = "json",
-        value_name = "PATH",
-        help = "Path to OpenCode usage JSON file"
-    )]
-    json_path: Option<PathBuf>,
 
     #[arg(long = "theme", help = "Theme to use for the application")]
     theme: Option<ThemeMode>,

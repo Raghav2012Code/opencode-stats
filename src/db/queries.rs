@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Local};
@@ -7,8 +6,8 @@ use chrono::{DateTime, Local};
 use crate::db::connection::{self, discover_database_path, open_database};
 use crate::db::errors::{Error, Result};
 use crate::db::models::{
-    AppData, DataSourceKind, ImportStats, InputOptions, JsonMessageRecord, MessageRecord,
-    SessionRecord, TokenUsage, UsageEvent,
+    AppData, ImportStats, InputOptions, JsonMessageRecord, MessageRecord, SessionRecord,
+    TokenUsage, UsageEvent,
 };
 use crate::utils::time::timestamp_ms_to_local;
 
@@ -25,10 +24,6 @@ struct SessionRow {
 }
 
 pub fn load_app_data(options: &InputOptions) -> Result<AppData> {
-    if let Some(json_path) = &options.json_path {
-        return load_from_json(json_path);
-    }
-
     let db_path = discover_database_path(options.database_path.as_deref()).ok_or_else(|| {
         Error::database_not_found(connection::default_database_candidates(
             options.database_path.as_deref(),
@@ -104,9 +99,7 @@ pub fn load_from_sqlite(db_path: &Path) -> Result<AppData> {
         session_records,
         ImportStats {
             skipped_sqlite_messages: sqlite_messages.skipped_messages,
-            ..ImportStats::default()
         },
-        DataSourceKind::Sqlite,
     )
 }
 
@@ -214,7 +207,7 @@ fn load_messages_sqlite(
             record.role = role_hint;
         }
 
-        if let Some(message) = parse_json_record(record, session, DataSourceKind::Sqlite) {
+        if let Some(message) = parse_json_record(record, session) {
             messages.push(message);
         }
     }
@@ -224,129 +217,7 @@ fn load_messages_sqlite(
     })
 }
 
-pub fn load_from_json(path: &Path) -> Result<AppData> {
-    if path.is_dir() {
-        return load_from_json_directory(path);
-    }
-
-    let contents = fs::read_to_string(path).map_err(|e| Error::json_read(path, e))?;
-
-    let json = serde_json::from_str::<serde_json::Value>(&contents)
-        .map_err(|e| Error::json_parse(path, e))?;
-
-    match json {
-        serde_json::Value::Array(items) => load_from_json_values(items, path),
-        serde_json::Value::Object(_) => load_from_json_values(vec![json], path),
-        _ => Err(Error::unsupported_json_format(path)),
-    }
-}
-
-fn load_from_json_directory(path: &Path) -> Result<AppData> {
-    let mut files = Vec::new();
-    collect_json_files(path, &mut files)?;
-    files.sort();
-
-    let mut values = Vec::new();
-    for file in &files {
-        let contents = fs::read_to_string(file).map_err(|e| Error::json_read(file, e))?;
-        let value = serde_json::from_str::<serde_json::Value>(&contents)
-            .map_err(|e| Error::json_parse(file, e))?;
-
-        match value {
-            serde_json::Value::Array(items) => values.extend(items),
-            serde_json::Value::Object(_) => values.push(value),
-            _ => return Err(Error::unsupported_json_format(file)),
-        }
-    }
-
-    load_from_json_values(values, path)
-}
-
-fn collect_json_files(path: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
-    let entries = fs::read_dir(path).map_err(|e| Error::directory_read(path, e))?;
-    for entry in entries {
-        let entry = entry.map_err(|e| Error::directory_read(path, e))?;
-        let entry_path = entry.path();
-        if entry_path.is_dir() {
-            collect_json_files(&entry_path, files)?;
-        } else if entry_path.extension().and_then(|ext| ext.to_str()) == Some("json") {
-            files.push(entry_path);
-        }
-    }
-    Ok(())
-}
-
-fn load_from_json_values(values: Vec<serde_json::Value>, source_path: &Path) -> Result<AppData> {
-    let mut all_events = Vec::new();
-    let mut all_messages = Vec::new();
-    let mut import_stats = ImportStats::default();
-    for value in values {
-        let record: JsonMessageRecord = match serde_json::from_value(value) {
-            Ok(record) => record,
-            Err(_) => {
-                import_stats.skipped_json_records =
-                    import_stats.skipped_json_records.saturating_add(1);
-                continue;
-            }
-        };
-
-        let session_id = source_path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .unwrap_or("json")
-            .to_string();
-
-        let inferred_session_id = record
-            .path
-            .as_ref()
-            .and_then(|path| {
-                path.cwd
-                    .as_ref()
-                    .or(path.root.as_ref())
-                    .and_then(|candidate| candidate.file_name())
-                    .and_then(|name| name.to_str())
-                    .map(ToOwned::to_owned)
-            })
-            .filter(|value| value.starts_with("ses_"));
-
-        let session_row = SessionRow {
-            id: session_id,
-            parent_id: None,
-            project_name: None,
-            project_worktree: None,
-            title: None,
-            time_created: None,
-            time_updated: None,
-            time_archived: None,
-        };
-
-        let session_row = SessionRow {
-            id: inferred_session_id.unwrap_or(session_row.id),
-            ..session_row
-        };
-
-        if let Some(message) = parse_json_record(record, &session_row, DataSourceKind::Json) {
-            if let Some(event) = message.event {
-                all_events.push(event);
-            }
-            all_messages.push(message.record);
-        }
-    }
-
-    finalize_app_data(
-        all_events,
-        all_messages,
-        Vec::new(),
-        import_stats,
-        DataSourceKind::Json,
-    )
-}
-
-fn parse_json_record(
-    record: JsonMessageRecord,
-    session: &SessionRow,
-    source: DataSourceKind,
-) -> Option<ParsedMessage> {
+fn parse_json_record(record: JsonMessageRecord, session: &SessionRow) -> Option<ParsedMessage> {
     let role = normalize_optional_text(record.role.clone());
     let provider_id = normalize_optional_text(record.provider_id.clone()).or_else(|| {
         record
@@ -372,7 +243,6 @@ fn parse_json_record(
         provider_id: provider_id.clone(),
         model_id: model_id.clone(),
         created_at,
-        source,
     };
 
     // `compaction` is a model call that produces a session digest, so it carries
@@ -438,7 +308,6 @@ fn parse_json_record(
         created_at,
         completed_at,
         stored_cost_usd: record.cost,
-        source,
     };
 
     Some(ParsedMessage {
@@ -459,7 +328,6 @@ fn finalize_app_data(
     messages: Vec<MessageRecord>,
     session_records: Vec<SessionRecord>,
     import_stats: ImportStats,
-    source: DataSourceKind,
 ) -> Result<AppData> {
     events.sort_by_key(|event| event.created_at);
 
@@ -468,21 +336,17 @@ fn finalize_app_data(
         messages,
         session_records,
         import_stats,
-        source,
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{load_from_json_values, load_from_sqlite, parse_json_record};
+    use super::{load_from_sqlite, parse_json_record};
     use crate::db::models::{
-        DataSourceKind, JsonCacheTokensRecord, JsonMessageRecord, JsonPathRecord, JsonTimeRecord,
-        JsonTokensRecord,
+        JsonCacheTokensRecord, JsonMessageRecord, JsonPathRecord, JsonTimeRecord, JsonTokensRecord,
     };
     use rusqlite::Connection;
-    use serde_json::json;
     use std::fs;
-    use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -524,34 +388,11 @@ mod tests {
             time_archived: None,
         };
 
-        let parsed = parse_json_record(record, &session, DataSourceKind::Json).unwrap();
+        let parsed = parse_json_record(record, &session).unwrap();
         let event = parsed.event.unwrap();
         assert_eq!(event.tokens.total(), 33);
         assert_eq!(event.model_id, "claude-sonnet-4.5");
         assert_eq!(event.provider_id.as_deref(), Some("anthropic"));
-    }
-
-    #[test]
-    fn tracks_skipped_json_records_during_import() {
-        let path = Path::new("/tmp/import.json");
-        let data = load_from_json_values(
-            vec![
-                json!({
-                    "role": "assistant",
-                    "providerID": "openai",
-                    "modelID": "gpt-5",
-                    "tokens": { "input": 10, "output": 20 },
-                    "time": { "created": 1_710_000_000_000i64, "completed": 1_710_000_001_000i64 }
-                }),
-                json!(42),
-            ],
-            path,
-        )
-        .unwrap();
-
-        assert_eq!(data.import_stats.skipped_json_records, 1);
-        assert_eq!(data.messages.len(), 1);
-        assert_eq!(data.events.len(), 1);
     }
 
     #[test]

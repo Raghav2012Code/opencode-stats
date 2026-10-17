@@ -45,7 +45,6 @@ pub struct UsageEvent {
     pub created_at: Option<DateTime<Local>>,
     pub completed_at: Option<DateTime<Local>>,
     pub stored_cost_usd: Option<Decimal>,
-    pub source: DataSourceKind,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -55,7 +54,6 @@ pub struct MessageRecord {
     pub provider_id: Option<String>,
     pub model_id: Option<String>,
     pub created_at: Option<DateTime<Local>>,
-    pub source: DataSourceKind,
 }
 
 impl UsageEvent {
@@ -92,13 +90,6 @@ impl MessageRecord {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub enum DataSourceKind {
-    #[default]
-    Sqlite,
-    Json,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SessionRecord {
     pub session_id: String,
@@ -112,25 +103,16 @@ pub struct AppData {
     pub messages: Vec<MessageRecord>,
     pub session_records: Vec<SessionRecord>,
     pub import_stats: ImportStats,
-    pub source: DataSourceKind,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ImportStats {
-    pub skipped_json_records: usize,
     pub skipped_sqlite_messages: usize,
 }
 
 impl ImportStats {
     pub fn summary(&self) -> Option<String> {
         let mut parts = Vec::new();
-        if self.skipped_json_records > 0 {
-            parts.push(format!(
-                "Skipped {} JSON {} during import",
-                self.skipped_json_records,
-                pluralize(self.skipped_json_records, "record", "records")
-            ));
-        }
         if self.skipped_sqlite_messages > 0 {
             parts.push(format!(
                 "Skipped {} SQLite {} during import",
@@ -180,7 +162,6 @@ mod tests {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InputOptions {
     pub database_path: Option<PathBuf>,
-    pub json_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

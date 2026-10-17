@@ -206,7 +206,7 @@ mod tests {
     use super::build_snapshot;
     use crate::cache::models_cache::{PricingAvailability, PricingCatalog};
     use crate::db::models::{
-        AppData, DataSourceKind, ImportStats, MessageRecord, SessionRecord, TokenUsage, UsageEvent,
+        AppData, ImportStats, MessageRecord, SessionRecord, TokenUsage, UsageEvent,
     };
     use crate::utils::pricing::ZeroCostBehavior;
     use crate::utils::time::TimeRange;
@@ -232,7 +232,6 @@ mod tests {
                 provider_id: None,
                 model_id: None,
                 created_at: Some(created_at),
-                source: DataSourceKind::Json,
             },
             MessageRecord {
                 session_id: "ses_1".to_string(),
@@ -240,7 +239,6 @@ mod tests {
                 provider_id: Some("openai".to_string()),
                 model_id: Some("gpt-5".to_string()),
                 created_at: Some(updated_at),
-                source: DataSourceKind::Json,
             },
         ];
 
@@ -265,10 +263,9 @@ mod tests {
             created_at: Some(updated_at),
             completed_at: Some(updated_at),
             stored_cost_usd: None,
-            source: DataSourceKind::Json,
         }];
 
-        let sqlite_like = AppData {
+        let with_records = AppData {
             events: events.clone(),
             messages: messages.clone(),
             session_records: vec![SessionRecord {
@@ -277,14 +274,12 @@ mod tests {
                 updated_at,
             }],
             import_stats: ImportStats::default(),
-            source: DataSourceKind::Sqlite,
         };
-        let json_like = AppData {
+        let without_records = AppData {
             events,
             messages,
             session_records: Vec::new(),
             import_stats: ImportStats::default(),
-            source: DataSourceKind::Json,
         };
         let pricing = PricingCatalog {
             models: BTreeMap::new(),
@@ -294,41 +289,41 @@ mod tests {
             load_notice: None,
         };
 
-        let sqlite_snapshot = build_snapshot(
-            &sqlite_like,
+        let with_records_snapshot = build_snapshot(
+            &with_records,
             &pricing,
             TimeRange::All,
             ZeroCostBehavior::KeepZero,
         );
-        let json_snapshot = build_snapshot(
-            &json_like,
+        let without_records_snapshot = build_snapshot(
+            &without_records,
             &pricing,
             TimeRange::All,
             ZeroCostBehavior::KeepZero,
         );
 
-        assert_eq!(sqlite_snapshot.overview.sessions, 1);
-        assert_eq!(sqlite_snapshot.overview.messages, 2);
-        assert_eq!(sqlite_snapshot.overview.prompts, 1);
+        assert_eq!(with_records_snapshot.overview.sessions, 1);
+        assert_eq!(with_records_snapshot.overview.messages, 2);
+        assert_eq!(with_records_snapshot.overview.prompts, 1);
         assert_eq!(
-            sqlite_snapshot.overview.sessions,
-            json_snapshot.overview.sessions
+            with_records_snapshot.overview.sessions,
+            without_records_snapshot.overview.sessions
         );
         assert_eq!(
-            sqlite_snapshot.overview.messages,
-            json_snapshot.overview.messages
+            with_records_snapshot.overview.messages,
+            without_records_snapshot.overview.messages
         );
         assert_eq!(
-            sqlite_snapshot.overview.prompts,
-            json_snapshot.overview.prompts
+            with_records_snapshot.overview.prompts,
+            without_records_snapshot.overview.prompts
         );
         assert_eq!(
-            sqlite_snapshot.overview.total_tokens,
-            json_snapshot.overview.total_tokens
+            with_records_snapshot.overview.total_tokens,
+            without_records_snapshot.overview.total_tokens
         );
         assert_eq!(
-            sqlite_snapshot.overview.models_used,
-            json_snapshot.overview.models_used
+            with_records_snapshot.overview.models_used,
+            without_records_snapshot.overview.models_used
         );
     }
 
@@ -352,7 +347,6 @@ mod tests {
                 updated_at,
             }],
             import_stats: ImportStats::default(),
-            source: DataSourceKind::Sqlite,
         };
         let pricing = PricingCatalog {
             models: BTreeMap::new(),
@@ -405,12 +399,10 @@ mod tests {
                 created_at: Some(created_at),
                 completed_at: Some(created_at),
                 stored_cost_usd: Some(rust_decimal::Decimal::ZERO),
-                source: DataSourceKind::Json,
             }],
             messages: Vec::new(),
             session_records: Vec::new(),
             import_stats: ImportStats::default(),
-            source: DataSourceKind::Json,
         };
         let pricing = PricingCatalog {
             models,
@@ -473,12 +465,10 @@ mod tests {
                 created_at: Some(created_at),
                 completed_at: Some(created_at),
                 stored_cost_usd: Some(rust_decimal::Decimal::ZERO),
-                source: DataSourceKind::Json,
             }],
             messages: Vec::new(),
             session_records: Vec::new(),
             import_stats: ImportStats::default(),
-            source: DataSourceKind::Json,
         };
         let pricing = PricingCatalog {
             models,

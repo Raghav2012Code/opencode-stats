@@ -135,7 +135,7 @@ pub fn weekday_labels() -> [Weekday; 7] {
 #[cfg(test)]
 mod tests {
     use super::{build_heatmap_data, intensity_thresholds, map_intensity};
-    use crate::db::models::{DataSourceKind, TokenUsage, UsageEvent};
+    use crate::db::models::{TokenUsage, UsageEvent};
     use crate::utils::time::TimeRange;
     use chrono::{Local, NaiveDate};
 
@@ -173,7 +173,6 @@ mod tests {
             created_at: Some(created_at),
             completed_at: Some(created_at),
             stored_cost_usd: None,
-            source: DataSourceKind::Json,
         }
     }
 

@@ -22,7 +22,7 @@
 ## 功能特性
 
 - 基于 `ratatui` 构建的终端仪表盘界面
-- 自动读取 OpenCode 本地数据库，也支持通过 `--json` 加载导出文件
+- 自动读取 OpenCode 本地数据库
 - 展示总 token、成本、会话数、消息数、提示数等概览指标
 - 按模型、按提供商查看使用占比与明细
 - 提供全部时间、最近 7 天、最近 30 天三种统计范围
@@ -106,12 +106,6 @@ oc-stats
 oc-stats --db /path/to/opencode.db
 ```
 
-### 指定 JSON 导出文件
-
-```bash
-oc-stats --json /path/to/export.json
-```
-
 ### 指定主题
 
 ```bash
@@ -175,10 +169,7 @@ oc-stats cache clean
 
 ### 数据输入
 
-`oc-stats` 支持两种输入来源：
-
-- OpenCode 本地 SQLite 数据库
-- OpenCode 导出的 JSON 文件
+`oc-stats` 读取 OpenCode 本地 SQLite 数据库。
 
 默认数据库位置通常为：
 

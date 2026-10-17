@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 #[derive(Debug, thiserror::Error)]
+#[allow(clippy::enum_variant_names)]
 pub enum Error {
     #[error("failed to open database at '{path}': {source}")]
     DatabaseOpen {
@@ -16,30 +17,6 @@ pub enum Error {
     DatabaseQuery {
         #[source]
         source: rusqlite::Error,
-    },
-
-    #[error("failed to read JSON file '{path}': {source}")]
-    JsonRead {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-
-    #[error("failed to parse JSON file '{path}': {source}")]
-    JsonParse {
-        path: PathBuf,
-        #[source]
-        source: serde_json::Error,
-    },
-
-    #[error("unsupported JSON input format at '{path}'")]
-    UnsupportedJsonFormat { path: PathBuf },
-
-    #[error("failed to read directory '{path}': {source}")]
-    DirectoryRead {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
     },
 }
 
@@ -65,31 +42,6 @@ impl Error {
 
     pub fn database_query(source: rusqlite::Error) -> Self {
         Self::DatabaseQuery { source }
-    }
-
-    pub fn json_read(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
-        Self::JsonRead {
-            path: path.into(),
-            source,
-        }
-    }
-
-    pub fn json_parse(path: impl Into<PathBuf>, source: serde_json::Error) -> Self {
-        Self::JsonParse {
-            path: path.into(),
-            source,
-        }
-    }
-
-    pub fn unsupported_json_format(path: impl Into<PathBuf>) -> Self {
-        Self::UnsupportedJsonFormat { path: path.into() }
-    }
-
-    pub fn directory_read(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
-        Self::DirectoryRead {
-            path: path.into(),
-            source,
-        }
     }
 }
 

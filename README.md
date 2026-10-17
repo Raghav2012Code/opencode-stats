@@ -13,7 +13,7 @@ A terminal dashboard for OpenCode usage statistics.
 
 <img src="images/overview.png" alt="screenshot" style="zoom:50%;" />
 
-`oc-stats` reads your local OpenCode SQLite database or JSON export files and displays token usage, cost estimates, model and provider distributions, and a 365-day activity heatmap directly in your terminal. Inspired by Claude Code's `/stats` command, this is an independent implementation focused on local execution, export, and shareability.
+`oc-stats` reads your local OpenCode SQLite database and displays token usage, cost estimates, model and provider distributions, and a 365-day activity heatmap directly in your terminal. Inspired by Claude Code's `/stats` command, this is an independent implementation focused on local execution, export, and shareability.
 
 > If you're already using OpenCode and want a quick view of your usage, costs, and activity trends, this tool is ready to go.
 >
@@ -22,7 +22,7 @@ A terminal dashboard for OpenCode usage statistics.
 ## Features
 
 - Terminal dashboard UI built on `ratatui`
-- Automatically reads OpenCode local database, or loads export files via `--json`
+- Automatically reads the OpenCode local database
 - Displays total tokens, costs, session count, message count, prompt count, and other overview metrics
 - View usage breakdown by model and provider
 - Supports three time ranges: all time, last 7 days, and last 30 days
@@ -106,12 +106,6 @@ oc-stats
 oc-stats --db /path/to/opencode.db
 ```
 
-### Specify JSON export file
-
-```bash
-oc-stats --json /path/to/export.json
-```
-
 ### Specify theme
 
 ```bash
@@ -175,10 +169,7 @@ Time ranges:
 
 ### Data input
 
-`oc-stats` supports two input sources:
-
-- OpenCode local SQLite database
-- OpenCode exported JSON files
+`oc-stats` reads the OpenCode local SQLite database.
 
 Default database locations:
 
