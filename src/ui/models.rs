@@ -816,30 +816,37 @@ mod tests {
         }
     }
 
-    fn page_text(snapshot: &AnalyticsSnapshot, providers_page: bool) -> String {
+    fn list_lines(
+        snapshot: &AnalyticsSnapshot,
+        providers_page: bool,
+        focused: usize,
+        search: Option<&super::SearchState>,
+    ) -> Vec<String> {
         let theme = Theme::builtin_dark();
         let mut terminal = Terminal::new(TestBackend::new(70, 16)).unwrap();
         terminal
             .draw(|frame| {
                 let area = frame.area();
                 if providers_page {
-                    render_providers(frame, area, snapshot, 0, None, &theme);
+                    render_providers(frame, area, snapshot, focused, search, &theme);
                 } else {
-                    render_models(frame, area, snapshot, 0, None, &theme);
+                    render_models(frame, area, snapshot, focused, search, &theme);
                 }
             })
             .unwrap();
 
-        let buffer = terminal.backend().buffer();
-        let mut text = String::new();
-        for y in 0..buffer.area.height {
-            for x in 0..buffer.area.width {
-                if let Some(cell) = buffer.cell((x, y)) {
-                    text.push_str(cell.symbol());
-                }
-            }
-        }
-        text
+        let buffer = terminal.backend().buffer().clone();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer.cell((x, y)).map(|cell| cell.symbol()).unwrap_or(" "))
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    fn page_text(snapshot: &AnalyticsSnapshot, providers_page: bool) -> String {
+        list_lines(snapshot, providers_page, 0, None).join("")
     }
 
     #[test]
@@ -857,6 +864,97 @@ mod tests {
         assert!(providers_text.contains("openai"));
         assert!(!providers_text.contains("gpt-5"));
         assert!(providers_text.contains("Total tokens: "));
+    }
+
+    #[test]
+    fn the_focus_line_names_the_focused_row_and_its_position() {
+        let snapshot = snapshot(
+            vec![usage_row("gpt-5", 42), usage_row("claude-4", 21)],
+            vec![usage_row("openai", 21), usage_row("anthropic", 9)],
+        );
+
+        for (providers_page, first, second) in
+            [(false, "gpt-5", "claude-4"), (true, "openai", "anthropic")]
+        {
+            let first_focused = list_lines(&snapshot, providers_page, 0, None);
+            let focus = first_focused
+                .iter()
+                .find(|line| line.contains("/2"))
+                .unwrap_or_else(|| panic!("no focus line: {first_focused:#?}"));
+            assert!(focus.contains(first), "{focus:?}");
+            assert!(focus.contains("1/2"), "{focus:?}");
+            assert!(focus.contains("j/k"), "{focus:?}");
+            assert!(focus.contains("f find"), "{focus:?}");
+
+            let second_focused = list_lines(&snapshot, providers_page, 1, None);
+            let focus = second_focused
+                .iter()
+                .find(|line| line.contains("/2"))
+                .unwrap_or_else(|| panic!("no focus line: {second_focused:#?}"));
+            assert!(focus.contains(second), "{focus:?}");
+            assert!(focus.contains("2/2"), "{focus:?}");
+        }
+
+        let sessions = sessions_lines(&many_session_rows(2), 1, 16);
+        let focus = sessions
+            .iter()
+            .find(|line| line.contains("/2"))
+            .unwrap_or_else(|| panic!("no focus line: {sessions:#?}"));
+        assert!(focus.contains("row-02"), "{focus:?}");
+        assert!(focus.contains("2/2"), "{focus:?}");
+    }
+
+    #[test]
+    fn the_detail_pane_reports_the_focused_rows_numbers() {
+        let snapshot = snapshot(vec![usage_row("gpt-5", 40)], vec![]);
+        let text = list_lines(&snapshot, false, 0, None).join("\n");
+        for expected in [
+            "Total tokens: 40",
+            "Input: 20",
+            "Output: 10",
+            "Cache: 10",
+            "Sessions: 1",
+            "Messages: 3",
+            "Prompts: 2",
+            "Rate: 12.50 tok/s",
+            "Active days: 1",
+        ] {
+            assert!(text.contains(expected), "missing {expected:?} in {text}");
+        }
+
+        let text = sessions_text(vec![session_row_fixture("ses_1", "Alpha", true)]);
+        for expected in [
+            "Total tokens: 42",
+            "Input: 21",
+            "Output: 11",
+            "Cache: 10",
+            "Messages: 3",
+            "Prompts: 2",
+            "Project: demo",
+            "Active days: 1",
+        ] {
+            assert!(text.contains(expected), "missing {expected:?} in {text}");
+        }
+    }
+
+    #[test]
+    fn the_search_overlay_shows_the_query_the_counter_and_the_selection() {
+        let snapshot = snapshot(
+            vec![usage_row("gpt-5", 42), usage_row("claude-4", 21)],
+            vec![],
+        );
+        let mut search =
+            super::SearchState::new(vec!["gpt-5".to_string(), "claude-4".to_string()], 0);
+        search.query = "gpt".to_string();
+        search.update_filter();
+
+        let text = list_lines(&snapshot, false, 1, Some(&search)).join("\n");
+
+        assert!(text.contains("gpt_"), "the query with its cursor: {text}");
+        assert!(text.contains("1/2"), "filtered over total: {text}");
+        assert!(text.contains("<esc> quit"), "{text}");
+        assert!(text.contains("<enter> select"), "{text}");
+        assert!(text.contains('▌'), "the selected row is marked: {text}");
     }
 
     #[test]
