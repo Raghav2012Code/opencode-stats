@@ -165,17 +165,22 @@ pub fn render_models(
     search: Option<&SearchState>,
     theme: &Theme,
 ) {
-    render_usage_list(
+    render_list_page(
         frame,
         area,
-        ListPage {
-            rows: &snapshot.models,
-            chart: &snapshot.chart,
-            noun: "model",
-        },
+        &snapshot.models,
+        "model",
         focused_index,
         search,
         theme,
+        |frame, body, focus| {
+            let focused_id = focus
+                .and_then(|index| snapshot.models.get(index))
+                .map(ListRow::row_id);
+            let chart = chart_with_focus(&snapshot.chart, focused_id);
+            frame.render_widget(build_chart(&chart, theme), body);
+        },
+        |frame, area, row| render_detail(frame, area, row, theme),
     );
 }
 
@@ -228,24 +233,25 @@ impl ListRow for SessionUsageRow {
     }
 }
 
-/// One list page: the rows to show, the chart above them, and what the rows are called
-/// when there are none. This is the only thing the Models and Providers pages differ in.
-struct ListPage<'a> {
-    rows: &'a [UsageRow],
-    chart: &'a ModelChartData,
-    noun: &'a str,
-}
-
-fn render_usage_list(
+/// The one list page: the layout, which row the search points at, and the choice between
+/// the search overlay, the focus line with its detail pane, and the empty state. The page
+/// supplies its body and its detail pane, which are the only things that differ.
+fn render_list_page<R, B, D>(
     frame: &mut ratatui::Frame<'_>,
     area: Rect,
-    page: ListPage<'_>,
+    rows: &[R],
+    noun: &str,
     focused_index: usize,
     search: Option<&SearchState>,
     theme: &Theme,
-) {
-    let ListPage { rows, chart, noun } = page;
-    let [chart_area, spacer1, header_area, spacer2, detail_area, _] = Layout::default()
+    draw_body: B,
+    draw_detail: D,
+) where
+    R: ListRow,
+    B: FnOnce(&mut ratatui::Frame<'_>, Rect, Option<usize>),
+    D: FnOnce(&mut ratatui::Frame<'_>, Rect, &R),
+{
+    let [body_area, spacer1, header_area, spacer2, detail_area, _] = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Fill(1),
@@ -261,9 +267,7 @@ fn render_usage_list(
         .and_then(|s| s.filtered_indices.get(s.selected).copied())
         .or(Some(focused_index));
 
-    let focused_row = effective_focus.and_then(|index| rows.get(index));
-    let chart_data = chart_with_focus(chart, focused_row.map(ListRow::row_id));
-    frame.render_widget(build_chart(&chart_data, theme), chart_area);
+    draw_body(frame, body_area, effective_focus);
 
     if let Some(search) = search {
         frame.render_widget(Paragraph::new(""), spacer1);
@@ -276,13 +280,13 @@ fn render_usage_list(
             rows,
             theme,
         );
-    } else if let Some(row) = focused_row {
+    } else if let Some(row) = effective_focus.and_then(|index| rows.get(index)) {
         frame.render_widget(
             Paragraph::new(focus_line(row, focused_index, rows.len(), theme)),
             header_area,
         );
         frame.render_widget(Paragraph::new(""), spacer2);
-        render_detail(frame, detail_area, row, theme);
+        draw_detail(frame, detail_area, row);
     } else {
         frame.render_widget(Paragraph::new(""), spacer2);
         frame.render_widget(
@@ -371,17 +375,22 @@ pub fn render_providers(
     search: Option<&SearchState>,
     theme: &Theme,
 ) {
-    render_usage_list(
+    render_list_page(
         frame,
         area,
-        ListPage {
-            rows: &snapshot.providers,
-            chart: &snapshot.provider_chart,
-            noun: "provider",
-        },
+        &snapshot.providers,
+        "provider",
         focused_index,
         search,
         theme,
+        |frame, body, focus| {
+            let focused_id = focus
+                .and_then(|index| snapshot.providers.get(index))
+                .map(ListRow::row_id);
+            let chart = chart_with_focus(&snapshot.provider_chart, focused_id);
+            frame.render_widget(build_chart(&chart, theme), body);
+        },
+        |frame, area, row| render_detail(frame, area, row, theme),
     );
 }
 
@@ -528,50 +537,17 @@ pub fn render_sessions(
     search: Option<&SearchState>,
     theme: &Theme,
 ) {
-    let [table_area, spacer1, header_area, spacer2, detail_area, _] = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Fill(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(5),
-            Constraint::Length(1),
-        ])
-        .areas(area);
-
-    let effective_focus: Option<usize> = search
-        .and_then(|s| s.filtered_indices.get(s.selected).copied())
-        .or(Some(focused_index));
-
-    let focused_row = effective_focus.and_then(|index| rows.get(index));
-    render_session_table(frame, table_area, rows, effective_focus, theme);
-
-    if let Some(search) = search {
-        frame.render_widget(Paragraph::new(""), spacer1);
-        render_search_overlay(
-            frame,
-            header_area,
-            spacer2,
-            detail_area,
-            search,
-            rows,
-            theme,
-        );
-    } else if let Some(row) = focused_row {
-        frame.render_widget(
-            Paragraph::new(focus_line(row, focused_index, rows.len(), theme)),
-            header_area,
-        );
-        frame.render_widget(Paragraph::new(""), spacer2);
-        render_session_detail(frame, detail_area, row, theme);
-    } else {
-        frame.render_widget(Paragraph::new(""), spacer2);
-        frame.render_widget(
-            Paragraph::new("No session activity in this time range.").style(theme.muted_style()),
-            detail_area,
-        );
-    }
+    render_list_page(
+        frame,
+        area,
+        rows,
+        "session",
+        focused_index,
+        search,
+        theme,
+        |frame, body, focus| render_session_table(frame, body, rows, focus, theme),
+        |frame, area, row| render_session_detail(frame, area, row, theme),
+    );
 }
 
 fn render_session_table(
