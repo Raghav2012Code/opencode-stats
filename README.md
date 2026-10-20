@@ -9,11 +9,6 @@
   <a href="https://github.com/Cateds/opencode-stats"><img src="https://img.shields.io/badge/fork_of-Cateds%2Fopencode--stats-blue" alt="Fork of Cateds/opencode-stats"></a>
 </p>
 
-<p align="center">
-  <a href="./README.md">English</a> | 
-  <a href="./README_CN.md">中文</a>
-</p>
-
 A terminal dashboard for OpenCode usage statistics.
 
 <img src="images/overview.png" alt="screenshot" style="zoom:50%;" />
@@ -66,7 +61,7 @@ This repository is **my personal fork** of [Cateds/opencode-stats](https://githu
 
 - Dead code deleted, the `colored` and `itertools` dependencies dropped, and one usage-row type in place of several.
 
-Every change has tests, and the reported figures are cross-checked against independent SQL over the same database. `README_CN.md` is upstream's document and may lag behind this fork.
+Every change has tests, and the reported figures are cross-checked against independent SQL over the same database.
 
 ## Features
 

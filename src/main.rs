@@ -459,6 +459,37 @@ mod tests {
         }
     }
 
+    #[test]
+    fn every_image_the_readme_references_exists() {
+        let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))
+            .expect("the README is part of the repository");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+
+        let mut missing = Vec::new();
+        let mut checked = 0;
+        for token in readme.split('"') {
+            let Some(relative) = token.strip_prefix("./").or(Some(token)) else {
+                continue;
+            };
+            if !relative.starts_with("images/") {
+                continue;
+            }
+            checked += 1;
+            if !root.join(relative).exists() {
+                missing.push(relative.to_string());
+            }
+        }
+
+        assert!(
+            checked >= 4,
+            "expected the README to show its screenshots, found {checked}"
+        );
+        assert!(
+            missing.is_empty(),
+            "the README references missing images: {missing:?}"
+        );
+    }
+
     fn test_catalog(availability: PricingAvailability) -> PricingCatalog {
         PricingCatalog {
             models: BTreeMap::new(),
