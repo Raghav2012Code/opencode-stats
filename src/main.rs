@@ -49,6 +49,7 @@ async fn main() -> Result<()> {
     let budget_cap = app_config.budget.monthly_cap()?;
     let brand = app_config.brand.brand()?;
     let show_exit_art = brand.show_exit_art;
+    let reload_every = app_config.app.reload_interval()?;
 
     if let Some(command) = cli.command {
         return run_command(command, database_path, cli.ignore_zero, view).await;
@@ -75,6 +76,7 @@ async fn main() -> Result<()> {
         view,
         budget_cap,
         brand,
+        reload_every,
     );
     app.run().await?;
     if show_exit_art {

@@ -116,12 +116,63 @@ impl ViewSection {
 
 /// Optional startup choices. Every value absent means today's behaviour: the Overview
 /// page, all time, and the database the discovery finds.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct AppSection {
     pub page: Option<String>,
     pub range: Option<String>,
     pub db: Option<PathBuf>,
+    pub reload_every: Option<toml::Value>,
+}
+
+impl AppSection {
+    /// How often to re-read the database: a number of seconds, or a string like
+    /// "30s", "5m" or "1h". Absent means no automatic reload at all.
+    pub fn reload_interval(&self) -> Result<Option<std::time::Duration>> {
+        match &self.reload_every {
+            None => Ok(None),
+            Some(value) => parse_duration(value).map(Some).map_err(|reason| {
+                Error::invalid_app_value("[app] reload_every", describe_value(value), &[reason])
+            }),
+        }
+    }
+}
+
+/// A human reading of the TOML value, for the error when it is not a duration.
+fn describe_value(value: &toml::Value) -> String {
+    match value {
+        toml::Value::String(text) => text.clone(),
+        other => other.to_string(),
+    }
+}
+
+fn parse_duration(value: &toml::Value) -> std::result::Result<std::time::Duration, &'static str> {
+    const HINT: &str = "a number of seconds or a duration like \"30s\", \"5m\" or \"1h\"";
+    match value {
+        toml::Value::Integer(seconds) => u64::try_from(*seconds)
+            .ok()
+            .filter(|seconds| *seconds > 0)
+            .map(std::time::Duration::from_secs)
+            .ok_or(HINT),
+        toml::Value::String(text) => {
+            let (number, unit) = text.trim().split_at(
+                text.trim()
+                    .find(|c: char| c.is_alphabetic())
+                    .unwrap_or(text.trim().len()),
+            );
+            let number: u64 = number.parse().map_err(|_| HINT)?;
+            if number == 0 {
+                return Err(HINT);
+            }
+            match unit {
+                "s" => Ok(std::time::Duration::from_secs(number)),
+                "m" => Ok(std::time::Duration::from_secs(number * 60)),
+                "h" => Ok(std::time::Duration::from_secs(number * 60 * 60)),
+                _ => Err(HINT),
+            }
+        }
+        _ => Err(HINT),
+    }
 }
 
 impl AppSection {
@@ -187,6 +238,7 @@ impl AppConfig {
     pub fn validate(&self) -> Result<()> {
         self.app.page()?;
         self.app.range()?;
+        self.app.reload_interval()?;
         self.budget.monthly_cap()?;
         self.brand.brand()?;
         Ok(())
@@ -370,6 +422,52 @@ db = "/tmp/opencode.db"
     #[test]
     fn rejects_unknown_fields_in_the_brand_section() {
         let err = toml::from_str::<AppConfig>("[brand]\nfont = \"x\"\n").unwrap_err();
+        assert!(format!("{err:#}").contains("unknown field"));
+    }
+
+    #[test]
+    fn an_absent_reload_interval_means_no_polling() {
+        let parsed: AppConfig = toml::from_str("[app]\n").unwrap();
+        assert_eq!(parsed.app.reload_interval().unwrap(), None);
+
+        assert_eq!(AppConfig::default().app.reload_interval().unwrap(), None);
+    }
+
+    #[test]
+    fn parses_seconds_and_suffixed_durations() {
+        use std::time::Duration;
+
+        for (text, expected) in [
+            ("300", Duration::from_secs(300)),
+            ("\"90s\"", Duration::from_secs(90)),
+            ("\"5m\"", Duration::from_secs(300)),
+            ("\"1h\"", Duration::from_secs(3600)),
+        ] {
+            let parsed: AppConfig =
+                toml::from_str(&format!("[app]\nreload_every = {text}\n")).unwrap();
+            assert_eq!(parsed.app.reload_interval().unwrap(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn an_invalid_duration_fails_naming_the_key() {
+        for text in ["\"soon\"", "\"0s\"", "0", "-5", "true"] {
+            let parsed: AppConfig =
+                toml::from_str(&format!("[app]\nreload_every = {text}\n")).unwrap();
+            let message = format!("{}", parsed.app.reload_interval().unwrap_err());
+            assert!(message.contains("[app] reload_every"), "{text}: {message}");
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_fields_still_applies_with_the_new_key() {
+        let parsed: AppConfig = toml::from_str("[app]\nreload_every = \"30s\"\n").unwrap();
+        assert_eq!(
+            parsed.app.reload_interval().unwrap(),
+            Some(std::time::Duration::from_secs(30))
+        );
+
+        let err = toml::from_str::<AppConfig>("[app]\nreload_everyy = \"30s\"\n").unwrap_err();
         assert!(format!("{err:#}").contains("unknown field"));
     }
 

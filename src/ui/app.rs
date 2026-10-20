@@ -133,6 +133,7 @@ pub struct App {
     budget_cap: Option<Decimal>,
     budget: Option<BudgetState>,
     brand: Brand,
+    reload_every: Option<Duration>,
     pub should_quit: bool,
     status_message: Option<StatusMessage>,
     pub focused_index: usize,
@@ -158,6 +159,7 @@ impl App {
         view: View,
         budget_cap: Option<Decimal>,
         brand: Brand,
+        reload_every: Option<Duration>,
     ) -> Self {
         // The overview is always all time; the chosen range applies to the list pages.
         let initial_range = if page.uses_range() {
@@ -186,6 +188,7 @@ impl App {
             budget_cap,
             budget: None,
             brand,
+            reload_every,
             should_quit: false,
             status_message: None,
             focused_index: 0,
@@ -249,6 +252,11 @@ impl App {
     async fn run_loop(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         let mut event_stream = EventStream::new();
         let mut tick = tokio::time::interval(Duration::from_millis(TICK_TIME_MS as _));
+        // The first reload happens one full interval after startup, not at once: the
+        // data was just loaded, and an immediate reload would only flash the footer.
+        let mut reload_tick = self
+            .reload_every
+            .map(|every| tokio::time::interval_at(tokio::time::Instant::now() + every, every));
 
         while !self.should_quit {
             self.clear_expired_status();
@@ -277,6 +285,17 @@ impl App {
                     self.copy_in_progress = false;
                     // The result names a file, so give it longer than a passing notice.
                     self.set_status_for(update, SHARE_STATUS_TTL);
+                }
+                _ = async {
+                    match reload_tick.as_mut() {
+                        Some(timer) => {
+                            timer.tick().await;
+                        }
+                        // No interval configured: this branch never fires and costs nothing.
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    self.reload();
                 }
                 _ = tick.tick() => {}
             }
@@ -970,6 +989,7 @@ mod tests {
             View::default(),
             None,
             Brand::default(),
+            None,
         )
     }
 
@@ -991,6 +1011,7 @@ mod tests {
             View::default(),
             None,
             Brand::default(),
+            None,
         )
     }
 
@@ -1201,6 +1222,7 @@ mod tests {
             },
             None,
             Brand::default(),
+            None,
         );
 
         let rule = frame_text(&filtered, 100, 24)
@@ -1242,6 +1264,7 @@ mod tests {
             View::default(),
             Some(cap_decimal("10")),
             Brand::default(),
+            None,
         );
         let frame = frame_text(&under, 100, 24);
         assert!(
@@ -1260,6 +1283,7 @@ mod tests {
             View::default(),
             Some(cap_decimal("3")),
             Brand::default(),
+            None,
         );
         assert!(
             frame_text(&exact, 100, 24).contains("Budget: $3.00 of $3.00 · at cap"),
@@ -1277,6 +1301,7 @@ mod tests {
             View::default(),
             Some(cap_decimal("2")),
             Brand::default(),
+            None,
         );
         let frame = frame_text(&over, 100, 24);
         assert!(
@@ -1306,6 +1331,7 @@ mod tests {
                 View::default(),
                 Some(cap_decimal("10")),
                 Brand::default(),
+                None,
             );
             let budget = frame_text(&app, 100, 24)
                 .lines()
@@ -1353,6 +1379,7 @@ mod tests {
                 show_comparison: comparison,
                 show_exit_art: true,
             },
+            None,
         )
     }
 
@@ -1411,6 +1438,31 @@ mod tests {
     }
 
     #[test]
+    fn an_automatic_reload_preserves_everything_the_manual_one_does() {
+        // Drives the reload path directly: no sleeping, no timer. The timer only decides
+        // *when* reload runs; what it preserves is decided here.
+        let mut app = test_app(test_data(vec![test_event()]), no_input_options());
+        assert!(app.reload_every.is_none());
+
+        app.page = Page::Models;
+        app.range = TimeRange::Last7Days;
+        app.focused_index = 0;
+        app.reload_every = Some(std::time::Duration::from_secs(60));
+
+        app.reload();
+
+        assert_eq!(app.page, Page::Models);
+        assert_eq!(app.range, TimeRange::Last7Days);
+        assert_eq!(app.focused_index, 0);
+        assert_eq!(app.reload_every, Some(std::time::Duration::from_secs(60)));
+        let frame = frame_text(&app, 100, 24);
+        assert!(
+            frame.contains("Reloaded usage data from disk") || frame.contains("Reload failed"),
+            "the reload reports itself: {frame}"
+        );
+    }
+
+    #[test]
     fn the_read_time_rides_the_rule_and_leaves_the_footer_to_the_hints() {
         let app = app_with(Page::Models, TimeRange::All, vec![test_event()]);
         let frame = frame_text(&app, 100, 24);
@@ -1464,6 +1516,7 @@ mod tests {
             View::default(),
             None,
             Brand::default(),
+            None,
         );
 
         let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
@@ -1510,6 +1563,7 @@ mod tests {
             View::default(),
             None,
             Brand::default(),
+            None,
         );
 
         assert_eq!(app.page, Page::Sessions);
