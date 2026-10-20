@@ -236,6 +236,65 @@ struct SqliteMessageLoad {
     skipped_messages: usize,
 }
 
+/// One row as SQLite hands it over: small columns copied, payload bytes owned. Parsing
+/// happens on worker threads; fetching stays a single sequential scan, which is the
+/// fastest pattern for a multi-hundred-megabyte table on any disk.
+struct RawMessage {
+    session_id: String,
+    role: Option<String>,
+    data: Vec<u8>,
+}
+
+struct ParsedBatch {
+    messages: Vec<Option<ParsedMessage>>,
+    skipped: usize,
+}
+
+/// Rows per batch: large enough that thread handoffs stay rare, small enough that the
+/// in-flight batches fit comfortably next to the parsed output.
+const PARSE_BATCH_ROWS: usize = 512;
+/// Batches in flight at once, bounding the extra memory to a few tens of megabytes.
+const PARSE_CHANNEL_BATCHES: usize = 4;
+
+fn parser_threads() -> usize {
+    std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(4)
+        .clamp(1, 8)
+}
+
+fn parse_message_batch(
+    batch: Vec<RawMessage>,
+    sessions: &BTreeMap<&str, &SessionRow>,
+) -> ParsedBatch {
+    let mut messages = Vec::with_capacity(batch.len());
+    let mut skipped = 0usize;
+
+    for raw in batch {
+        let Some(session) = sessions.get(raw.session_id.as_str()) else {
+            skipped = skipped.saturating_add(1);
+            continue;
+        };
+
+        let mut record: JsonMessageRecord = match serde_json::from_slice(&raw.data) {
+            Ok(record) => record,
+            Err(_) => {
+                skipped = skipped.saturating_add(1);
+                continue;
+            }
+        };
+
+        // Modern messages keep the role in the `type` column, not in the payload.
+        if record.role.is_none() {
+            record.role = raw.role.clone();
+        }
+
+        messages.push(parse_json_record(record, session));
+    }
+
+    ParsedBatch { messages, skipped }
+}
+
 fn load_messages_sqlite(
     conn: &rusqlite::Connection,
     sessions: &BTreeMap<&str, &SessionRow>,
@@ -245,46 +304,112 @@ fn load_messages_sqlite(
         .prepare(messages_sql(schema))
         .map_err(Error::database_query)?;
 
-    let mut messages = Vec::new();
+    // Batches flow from the fetching main thread to the parsers; results land in one
+    // shared vector and are ordered by batch index afterwards, so the rows come out in
+    // exactly the order the old single-threaded loop produced them.
+    let (work_tx, work_rx) =
+        std::sync::mpsc::sync_channel::<(usize, Vec<RawMessage>)>(PARSE_CHANNEL_BATCHES);
+    let work_rx = std::sync::Arc::new(std::sync::Mutex::new(work_rx));
+    let parsed_batches = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let mut skipped_messages = 0usize;
-    let mut rows = stmt.query([]).map_err(Error::database_query)?;
-    while let Some(row) = rows.next().map_err(Error::database_query)? {
-        let session_id: String = row.get("session_id").map_err(Error::database_query)?;
-        let Some(session) = sessions.get(session_id.as_str()) else {
-            skipped_messages = skipped_messages.saturating_add(1);
-            continue;
-        };
-        let role_hint: Option<String> = row.get("role").map_err(Error::database_query)?;
 
-        let data = match row.get_ref("data").map_err(Error::database_query)? {
-            rusqlite::types::ValueRef::Text(bytes) => bytes,
-            _ => {
-                skipped_messages = skipped_messages.saturating_add(1);
-                continue;
-            }
-        };
-
-        let mut record: JsonMessageRecord = match serde_json::from_slice(data) {
-            Ok(record) => record,
-            Err(_) => {
-                skipped_messages = skipped_messages.saturating_add(1);
-                continue;
-            }
-        };
-
-        // Modern messages keep the role in the `type` column, not in the payload.
-        if record.role.is_none() {
-            record.role = role_hint;
+    std::thread::scope(|scope| {
+        for _ in 0..parser_threads() {
+            let work_rx = std::sync::Arc::clone(&work_rx);
+            let parsed_batches = std::sync::Arc::clone(&parsed_batches);
+            scope.spawn(move || {
+                while let Ok((index, batch)) = work_rx
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .recv()
+                {
+                    let parsed = parse_message_batch(batch, sessions);
+                    parsed_batches
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push((index, parsed));
+                }
+            });
         }
 
-        if let Some(message) = parse_json_record(record, session) {
-            messages.push(message);
+        let mut rows = stmt.query([]).map_err(Error::database_query)?;
+        let mut batch = Vec::with_capacity(PARSE_BATCH_ROWS);
+        let mut batch_index = 0usize;
+        loop {
+            match rows.next() {
+                Err(err) => {
+                    drop(work_tx);
+                    return Err(Error::database_query(err));
+                }
+                Ok(None) => break,
+                Ok(Some(row)) => match read_raw_message(row, sessions) {
+                    Ok(Some(raw)) => batch.push(raw),
+                    Ok(None) => skipped_messages = skipped_messages.saturating_add(1),
+                    Err(err) => {
+                        drop(work_tx);
+                        return Err(err);
+                    }
+                },
+            }
+            if batch.len() >= PARSE_BATCH_ROWS {
+                let full = std::mem::replace(&mut batch, Vec::with_capacity(PARSE_BATCH_ROWS));
+                if work_tx.send((batch_index, full)).is_err() {
+                    break;
+                }
+                batch_index += 1;
+            }
         }
+        if !batch.is_empty() {
+            // The parsers are gone only if one panicked, in which case the scope
+            // re-raises it on the way out; dropping the batch is then moot.
+            let _ = work_tx.send((batch_index, batch));
+        }
+        drop(work_tx);
+        // Every sent batch is parsed: receivers only stop once the sender is dropped
+        // and the queue is drained, and the scope joins every parser.
+        Ok(())
+    })?;
+
+    let mut batches = parsed_batches
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .drain(..)
+        .collect::<Vec<_>>();
+    batches.sort_by_key(|(index, _)| *index);
+
+    let mut messages = Vec::new();
+    for (_, batch) in batches {
+        skipped_messages = skipped_messages.saturating_add(batch.skipped);
+        messages.extend(batch.messages.into_iter().flatten());
     }
+
     Ok(SqliteMessageLoad {
         messages,
         skipped_messages,
     })
+}
+
+/// Reads one row's small columns and copies its payload, without parsing it. Rows for
+/// unknown sessions and non-text payloads are counted as skipped here, exactly as the
+/// old loop did before it ever reached the JSON parser.
+fn read_raw_message(
+    row: &rusqlite::Row<'_>,
+    sessions: &BTreeMap<&str, &SessionRow>,
+) -> Result<Option<RawMessage>> {
+    let session_id: String = row.get("session_id").map_err(Error::database_query)?;
+    if !sessions.contains_key(session_id.as_str()) {
+        return Ok(None);
+    }
+    let role: Option<String> = row.get("role").map_err(Error::database_query)?;
+
+    match row.get_ref("data").map_err(Error::database_query)? {
+        rusqlite::types::ValueRef::Text(bytes) => Ok(Some(RawMessage {
+            session_id,
+            role,
+            data: bytes.to_owned(),
+        })),
+        _ => Ok(None),
+    }
 }
 
 fn parse_json_record(record: JsonMessageRecord, session: &SessionRow) -> Option<ParsedMessage> {

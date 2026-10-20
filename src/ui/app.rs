@@ -144,6 +144,9 @@ pub struct App {
     clipboard_sender: mpsc::UnboundedSender<String>,
     clipboard_updates: mpsc::UnboundedReceiver<String>,
     copy_in_progress: bool,
+    reload_sender: mpsc::UnboundedSender<crate::db::errors::Result<AppData>>,
+    reload_updates: mpsc::UnboundedReceiver<crate::db::errors::Result<AppData>>,
+    reload_in_flight: bool,
 }
 
 impl App {
@@ -176,6 +179,7 @@ impl App {
         );
         let (sender, receiver) = mpsc::unbounded_channel();
         let (clipboard_sender, clipboard_updates) = mpsc::unbounded_channel();
+        let (reload_sender, reload_updates) = mpsc::unbounded_channel();
         if pricing.refresh_needed {
             let cache_path = pricing.cache_path.clone();
             tokio::spawn(refresh_remote_models(cache_path, sender));
@@ -204,6 +208,9 @@ impl App {
             clipboard_sender,
             clipboard_updates,
             copy_in_progress: false,
+            reload_sender,
+            reload_updates,
+            reload_in_flight: false,
         };
         app.refresh_budget();
 
@@ -291,6 +298,9 @@ impl App {
                     // The result names a file, so give it longer than a passing notice.
                     self.set_status_for(update, SHARE_STATUS_TTL);
                 }
+                Some(result) = self.reload_updates.recv() => {
+                    self.finish_background_reload(result);
+                }
                 _ = async {
                     match reload_tick.as_mut() {
                         Some(timer) => {
@@ -356,8 +366,39 @@ impl App {
         }
     }
 
+    /// Reloads without freezing the interface: the database read runs on a blocking
+    /// thread and the result lands through the same channel the loop already polls.
+    /// A reload that is still running is never started twice. Without a runtime
+    /// (tests), the read runs inline instead of panicking on the missing reactor.
+    fn start_reload(&mut self) {
+        if self.reload_in_flight {
+            self.set_status("Reload already in progress ...");
+            return;
+        }
+
+        self.reload_in_flight = true;
+        self.set_status("Reloading usage data from disk ...");
+
+        let sender = self.reload_sender.clone();
+        let input_options = self.input_options.clone();
+        if tokio::runtime::Handle::try_current().is_ok() {
+            tokio::task::spawn_blocking(move || {
+                let _ = sender.send(load_app_data(&input_options));
+            });
+        } else {
+            let _ = sender.send(load_app_data(&input_options));
+        }
+    }
+
     fn reload(&mut self) {
         let result = load_app_data(&self.input_options);
+        self.apply_reload(result);
+    }
+
+    /// Applies a background reload's result and marks the reload done. The event loop
+    /// calls this; tests drive it directly with what `start_reload` queued.
+    fn finish_background_reload(&mut self, result: crate::db::errors::Result<AppData>) {
+        self.reload_in_flight = false;
         self.apply_reload(result);
     }
 
@@ -600,7 +641,7 @@ impl App {
                 self.recompute();
             }
             // Lowercase 'r' cycles the time range, so live reload takes shifted 'R'.
-            KeyCode::Char('R') => self.reload(),
+            KeyCode::Char('R') => self.start_reload(),
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.should_quit = true;
             }
@@ -1679,9 +1720,33 @@ mod tests {
 
         app.handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::empty()));
 
+        // The key starts a background reload instead of blocking: the flag is set and
+        // the footer says so, while the rule keeps its timestamp throughout.
+        assert!(app.reload_in_flight);
+        let frame = frame_text(&app, 100, 24);
+        assert!(frame.contains("Reloading usage data from disk"), "{frame}");
+        assert!(
+            frame.lines().next().unwrap_or_default().contains("Loaded"),
+            "{frame}"
+        );
+
+        // A second press while one is running starts nothing new.
+        app.handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::empty()));
+        let frame = frame_text(&app, 100, 24);
+        assert!(frame.contains("already in progress"), "{frame}");
+
+        // Without a runtime the read runs inline, so the queued result is already
+        // there: completing the cycle clears the flag and reports what happened.
         // With a database present this reloads real data, without one it reports the
         // failure; either way the key reaches reload and the rule keeps its timestamp.
+        let result = app.reload_updates.try_recv().expect("a reload is queued");
+        app.finish_background_reload(result);
+        assert!(!app.reload_in_flight);
         let frame = frame_text(&app, 100, 24);
+        assert!(
+            frame.contains("Reloaded usage data from disk") || frame.contains("Reload failed"),
+            "{frame}"
+        );
         assert!(
             frame.lines().next().unwrap_or_default().contains("Loaded"),
             "{frame}"
