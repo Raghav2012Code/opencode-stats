@@ -563,7 +563,7 @@ fn layout_rows<const ROW: usize, const COL: usize>(area: Rect) -> [[Rect; COL]; 
 mod tests {
     use super::{render_models, render_providers};
     use crate::analytics::heatmap_data::HeatmapData;
-    use crate::analytics::model_stats::{ModelChartData, SessionUsageRow, UsageRow};
+    use crate::analytics::model_stats::{ModelChartData, UsageRow};
     use crate::analytics::{AnalyticsSnapshot, OverviewStats};
     use crate::ui::theme::Theme;
     use crate::utils::pricing::PriceSummary;
