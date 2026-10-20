@@ -105,6 +105,8 @@ impl BudgetSection {
 pub struct ViewSection {
     pub hide_zero_cost: bool,
     pub project: Option<String>,
+    pub pinned_models: Vec<String>,
+    pub pinned_providers: Vec<String>,
 }
 
 impl ViewSection {
@@ -112,6 +114,8 @@ impl ViewSection {
         View {
             hide_zero_cost: self.hide_zero_cost,
             project: self.project.clone(),
+            pinned_models: self.pinned_models.clone(),
+            pinned_providers: self.pinned_providers.clone(),
         }
     }
 }
@@ -340,6 +344,26 @@ db = "/tmp/opencode.db"
     fn rejects_unknown_fields_in_the_app_section() {
         let parsed = toml::from_str::<AppConfig>("[app]\npagez = \"overview\"\n").unwrap_err();
         assert!(format!("{parsed:#}").contains("unknown field"));
+    }
+
+    #[test]
+    fn the_view_section_parses_pins_and_the_project() {
+        let parsed: AppConfig = toml::from_str(
+            "[view]\npinned_models = [\"ccc\", \"aaa\"]\npinned_providers = [\"zulu\"]\nproject = \"demo\"\n",
+        )
+        .unwrap();
+        let view = parsed.view.view();
+
+        assert_eq!(
+            view.pinned_models,
+            vec!["ccc".to_string(), "aaa".to_string()]
+        );
+        assert_eq!(view.pinned_providers, vec!["zulu".to_string()]);
+        assert_eq!(view.project.as_deref(), Some("demo"));
+
+        let empty: AppConfig = toml::from_str("[view]\n").unwrap();
+        let view = empty.view.view();
+        assert!(view.pinned_models.is_empty() && view.pinned_providers.is_empty());
     }
 
     #[test]

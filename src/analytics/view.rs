@@ -12,6 +12,10 @@ pub struct View {
     pub hide_zero_cost: bool,
     /// Show only this project, matched the way session rows resolve it.
     pub project: Option<String>,
+    /// These models come first, in this order; everything else keeps its order.
+    pub pinned_models: Vec<String>,
+    /// These providers come first, in this order; everything else keeps its order.
+    pub pinned_providers: Vec<String>,
 }
 
 impl View {
@@ -42,18 +46,24 @@ mod tests {
         let only_zero = View {
             hide_zero_cost: true,
             project: None,
+            pinned_models: Vec::new(),
+            pinned_providers: Vec::new(),
         };
         assert_eq!(only_zero.label(), Some("hiding zero-cost rows".to_string()));
 
         let only_project = View {
             hide_zero_cost: false,
             project: Some("demo".to_string()),
+            pinned_models: Vec::new(),
+            pinned_providers: Vec::new(),
         };
         assert_eq!(only_project.label(), Some("project: demo".to_string()));
 
         let both = View {
             hide_zero_cost: true,
             project: Some("demo".to_string()),
+            pinned_models: Vec::new(),
+            pinned_providers: Vec::new(),
         };
         assert_eq!(
             both.label(),

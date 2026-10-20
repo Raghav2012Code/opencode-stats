@@ -153,7 +153,7 @@ pub fn build_snapshot_view(
         .collect::<BTreeSet<_>>()
         .len();
 
-    AnalyticsSnapshot {
+    let mut snapshot = AnalyticsSnapshot {
         overview: OverviewStats {
             total_tokens,
             input_tokens,
@@ -180,6 +180,55 @@ pub fn build_snapshot_view(
             zero_cost_behavior,
         ),
         heatmap,
+    };
+
+    apply_pins(&mut snapshot, &view);
+    snapshot
+}
+
+/// Puts pinned rows first, in the configured order, leaving everything else stable.
+/// Unknown names match nothing and are ignored. The chart series travel with their
+/// rows and take the new position's colour, so the list and the chart keep agreeing;
+/// the Overview's favourite model is the first row, so it follows the pins too.
+fn apply_pins(snapshot: &mut AnalyticsSnapshot, view: &View) {
+    order_pinned(&mut snapshot.models, &view.pinned_models, |row| {
+        row.id.as_str()
+    });
+    order_pinned(&mut snapshot.providers, &view.pinned_providers, |row| {
+        row.id.as_str()
+    });
+    reorder_chart(&mut snapshot.chart, &snapshot.models);
+    reorder_chart(&mut snapshot.provider_chart, &snapshot.providers);
+}
+
+fn order_pinned<T>(rows: &mut [T], pinned: &[String], key: impl Fn(&T) -> &str) {
+    if pinned.is_empty() {
+        return;
+    }
+    let position: std::collections::HashMap<&str, usize> = pinned
+        .iter()
+        .enumerate()
+        .map(|(index, name)| (name.as_str(), index))
+        .collect();
+    // `sort_by_key` is stable: pinned rows come first in the given order, the rest
+    // keep the order they had.
+    rows.sort_by_key(|row| position.get(key(row)).copied().unwrap_or(usize::MAX));
+}
+
+fn reorder_chart(chart: &mut ModelChartData, rows: &[UsageRow]) {
+    let position: std::collections::HashMap<&str, usize> = rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| (row.id.as_str(), index))
+        .collect();
+    chart.series.sort_by_key(|series| {
+        position
+            .get(series.model_id.as_str())
+            .copied()
+            .unwrap_or(usize::MAX)
+    });
+    for (index, series) in chart.series.iter_mut().enumerate() {
+        series.palette_index = index;
     }
 }
 
@@ -428,6 +477,8 @@ mod tests {
             super::View {
                 hide_zero_cost: true,
                 project: None,
+                pinned_models: Vec::new(),
+                pinned_providers: Vec::new(),
             },
         );
 
@@ -474,6 +525,8 @@ mod tests {
             super::View {
                 hide_zero_cost: true,
                 project: None,
+                pinned_models: Vec::new(),
+                pinned_providers: Vec::new(),
             },
         );
 
@@ -589,6 +642,8 @@ mod tests {
         super::View {
             hide_zero_cost: false,
             project: Some(name.to_string()),
+            pinned_models: Vec::new(),
+            pinned_providers: Vec::new(),
         }
     }
 
@@ -647,6 +702,105 @@ mod tests {
         assert!(filtered.models.is_empty());
         assert!(filtered.providers.is_empty());
         assert!(filtered.sessions.is_empty());
+    }
+
+    fn pinned_view(models: &[&str], providers: &[&str]) -> super::View {
+        super::View {
+            hide_zero_cost: false,
+            project: None,
+            pinned_models: models.iter().map(|name| name.to_string()).collect(),
+            pinned_providers: providers.iter().map(|name| name.to_string()).collect(),
+        }
+    }
+
+    fn three_model_data() -> AppData {
+        AppData {
+            events: vec![
+                event_with("aaa", "zulu", Some(Decimal::new(3, 0)), 300),
+                event_with("bbb", "alpha", Some(Decimal::new(2, 0)), 200),
+                event_with("ccc", "alpha", Some(Decimal::new(1, 0)), 100),
+            ],
+            messages: Vec::new(),
+            session_records: Vec::new(),
+            import_stats: ImportStats::default(),
+        }
+    }
+
+    fn model_ids(snapshot: &super::AnalyticsSnapshot) -> Vec<&str> {
+        snapshot.models.iter().map(|row| row.id.as_str()).collect()
+    }
+
+    #[test]
+    fn pinned_models_come_first_in_the_configured_order() {
+        let data = three_model_data();
+
+        let pinned = super::build_snapshot_view(
+            &data,
+            &empty_catalog(),
+            TimeRange::All,
+            ZeroCostBehavior::KeepZero,
+            pinned_view(&["ccc", "aaa"], &[]),
+        );
+
+        assert_eq!(model_ids(&pinned), vec!["ccc", "aaa", "bbb"]);
+        assert_eq!(pinned.models[0].id, "ccc");
+    }
+
+    #[test]
+    fn unpinned_rows_keep_their_previous_order() {
+        let data = three_model_data();
+
+        let plain = super::build_snapshot(
+            &data,
+            &empty_catalog(),
+            TimeRange::All,
+            ZeroCostBehavior::KeepZero,
+        );
+        let pinned = super::build_snapshot_view(
+            &data,
+            &empty_catalog(),
+            TimeRange::All,
+            ZeroCostBehavior::KeepZero,
+            pinned_view(&["bbb"], &[]),
+        );
+
+        assert_eq!(model_ids(&plain), vec!["aaa", "bbb", "ccc"]);
+        assert_eq!(model_ids(&pinned), vec!["bbb", "aaa", "ccc"]);
+    }
+
+    #[test]
+    fn unknown_pins_are_ignored_without_failing() {
+        let data = three_model_data();
+
+        let pinned = super::build_snapshot_view(
+            &data,
+            &empty_catalog(),
+            TimeRange::All,
+            ZeroCostBehavior::KeepZero,
+            pinned_view(&["nope", "aaa"], &["missing"]),
+        );
+
+        assert_eq!(model_ids(&pinned), vec!["aaa", "bbb", "ccc"]);
+        let providers: Vec<&str> = pinned.providers.iter().map(|row| row.id.as_str()).collect();
+        assert_eq!(providers, vec!["alpha", "zulu"]);
+    }
+
+    #[test]
+    fn pinned_providers_come_first_and_the_favourite_follows() {
+        let data = three_model_data();
+
+        let pinned = super::build_snapshot_view(
+            &data,
+            &empty_catalog(),
+            TimeRange::All,
+            ZeroCostBehavior::KeepZero,
+            pinned_view(&["ccc"], &["zulu"]),
+        );
+
+        let providers: Vec<&str> = pinned.providers.iter().map(|row| row.id.as_str()).collect();
+        assert_eq!(providers, vec!["zulu", "alpha"]);
+        // The Overview's favourite is the first model row, so it follows the pins.
+        assert_eq!(pinned.models[0].id, "ccc");
     }
 
     #[test]

@@ -1228,6 +1228,8 @@ mod tests {
             View {
                 hide_zero_cost: true,
                 project: None,
+                pinned_models: Vec::new(),
+                pinned_providers: Vec::new(),
             },
             None,
             Brand::default(),
@@ -1484,6 +1486,8 @@ mod tests {
             View {
                 hide_zero_cost: false,
                 project: Some("absent".to_string()),
+                pinned_models: Vec::new(),
+                pinned_providers: Vec::new(),
             },
             None,
             Brand::default(),
