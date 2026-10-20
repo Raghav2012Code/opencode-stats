@@ -17,6 +17,54 @@ pub struct AppConfig {
     pub app: AppSection,
     pub view: ViewSection,
     pub budget: BudgetSection,
+    pub brand: BrandSection,
+}
+
+/// Words of your own on the dashboard. Everything here is optional; unset values
+/// render exactly as today.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct BrandSection {
+    pub tagline: Option<String>,
+    pub comparison: Option<bool>,
+    pub exit_art: Option<bool>,
+}
+
+/// Brand strings with the defaults filled in, so rendering never branches on Options.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Brand {
+    pub tagline: Option<String>,
+    pub show_comparison: bool,
+    pub show_exit_art: bool,
+}
+
+impl Default for Brand {
+    fn default() -> Self {
+        Self {
+            tagline: None,
+            show_comparison: true,
+            show_exit_art: true,
+        }
+    }
+}
+
+impl BrandSection {
+    pub fn brand(&self) -> Result<Brand> {
+        if let Some(tagline) = self.tagline.as_deref()
+            && tagline.trim().is_empty()
+        {
+            return Err(Error::invalid_app_value(
+                "[brand] tagline",
+                tagline,
+                &["non-empty text"],
+            ));
+        }
+        Ok(Brand {
+            tagline: self.tagline.clone(),
+            show_comparison: self.comparison.unwrap_or(true),
+            show_exit_art: self.exit_art.unwrap_or(true),
+        })
+    }
 }
 
 /// A monthly spending cap in US dollars. Absent means no budget line.
@@ -140,6 +188,7 @@ impl AppConfig {
         self.app.page()?;
         self.app.range()?;
         self.budget.monthly_cap()?;
+        self.brand.brand()?;
         Ok(())
     }
 }
@@ -284,6 +333,43 @@ db = "/tmp/opencode.db"
     #[test]
     fn rejects_unknown_fields_in_the_budget_section() {
         let err = toml::from_str::<AppConfig>("[budget]\nweekly = 10\n").unwrap_err();
+        assert!(format!("{err:#}").contains("unknown field"));
+    }
+
+    #[test]
+    fn brand_defaults_to_todays_strings() {
+        let brand = AppConfig::default().brand.brand().unwrap();
+
+        assert_eq!(brand.tagline, None);
+        assert!(brand.show_comparison);
+        assert!(brand.show_exit_art);
+    }
+
+    #[test]
+    fn parses_every_brand_value() {
+        let parsed: AppConfig = toml::from_str(
+            "[brand]\ntagline = \"Ship it\"\ncomparison = false\nexit_art = false\n",
+        )
+        .unwrap();
+        let brand = parsed.brand.brand().unwrap();
+
+        assert_eq!(brand.tagline.as_deref(), Some("Ship it"));
+        assert!(!brand.show_comparison);
+        assert!(!brand.show_exit_art);
+    }
+
+    #[test]
+    fn an_empty_tagline_fails_naming_the_key() {
+        let parsed: AppConfig = toml::from_str("[brand]\ntagline = \"  \"\n").unwrap();
+        let message = format!("{}", parsed.brand.brand().unwrap_err());
+
+        assert!(message.contains("[brand] tagline"), "{message}");
+        assert!(message.contains("non-empty"), "{message}");
+    }
+
+    #[test]
+    fn rejects_unknown_fields_in_the_brand_section() {
+        let err = toml::from_str::<AppConfig>("[brand]\nfont = \"x\"\n").unwrap_err();
         assert!(format!("{err:#}").contains("unknown field"));
     }
 

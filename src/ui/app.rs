@@ -17,6 +17,7 @@ use crate::analytics::model_stats::UsageRow;
 use crate::analytics::view::View;
 use crate::analytics::{AnalyticsSnapshot, BudgetState, build_snapshot_view};
 use crate::cache::models_cache::{PricingCatalog, refresh_remote_models};
+use crate::config::app_config::Brand;
 use crate::db::models::{AppData, InputOptions};
 use crate::db::queries::load_app_data;
 use crate::stats_output::{stats_csv, stats_json};
@@ -131,6 +132,7 @@ pub struct App {
     pub view: View,
     budget_cap: Option<Decimal>,
     budget: Option<BudgetState>,
+    brand: Brand,
     pub should_quit: bool,
     status_message: Option<StatusMessage>,
     pub focused_index: usize,
@@ -155,6 +157,7 @@ impl App {
         range: TimeRange,
         view: View,
         budget_cap: Option<Decimal>,
+        brand: Brand,
     ) -> Self {
         // The overview is always all time; the chosen range applies to the list pages.
         let initial_range = if page.uses_range() {
@@ -182,6 +185,7 @@ impl App {
             view,
             budget_cap,
             budget: None,
+            brand,
             should_quit: false,
             status_message: None,
             focused_index: 0,
@@ -376,7 +380,14 @@ impl App {
 
         match self.page {
             Page::Overview => {
-                render_overview(frame, body, &self.snapshot, self.budget.as_ref(), theme);
+                render_overview(
+                    frame,
+                    body,
+                    &self.snapshot,
+                    self.budget.as_ref(),
+                    &self.brand,
+                    theme,
+                );
             }
             Page::Models => render_models(
                 frame,
@@ -733,7 +744,8 @@ impl App {
     fn current_page_summary(&self) -> String {
         match self.page {
             Page::Overview => format!(
-                "oc-stats {}\nTokens: {}\nCost: {}\nSessions: {}\nMessages: {}\nPrompts: {}",
+                "{} {}\nTokens: {}\nCost: {}\nSessions: {}\nMessages: {}\nPrompts: {}",
+                self.brand.tagline.as_deref().unwrap_or("oc-stats"),
                 self.effective_range().label(),
                 self.snapshot.overview.total_tokens,
                 format_price_summary(&self.snapshot.overview.total_cost),
@@ -957,6 +969,7 @@ mod tests {
             TimeRange::All,
             View::default(),
             None,
+            Brand::default(),
         )
     }
 
@@ -977,6 +990,7 @@ mod tests {
             range,
             View::default(),
             None,
+            Brand::default(),
         )
     }
 
@@ -1186,6 +1200,7 @@ mod tests {
                 hide_zero_cost: true,
             },
             None,
+            Brand::default(),
         );
 
         let rule = frame_text(&filtered, 100, 24)
@@ -1226,6 +1241,7 @@ mod tests {
             TimeRange::All,
             View::default(),
             Some(cap_decimal("10")),
+            Brand::default(),
         );
         let frame = frame_text(&under, 100, 24);
         assert!(
@@ -1243,6 +1259,7 @@ mod tests {
             TimeRange::All,
             View::default(),
             Some(cap_decimal("3")),
+            Brand::default(),
         );
         assert!(
             frame_text(&exact, 100, 24).contains("Budget: $3.00 of $3.00 · at cap"),
@@ -1259,6 +1276,7 @@ mod tests {
             TimeRange::All,
             View::default(),
             Some(cap_decimal("2")),
+            Brand::default(),
         );
         let frame = frame_text(&over, 100, 24);
         assert!(
@@ -1287,6 +1305,7 @@ mod tests {
                 range,
                 View::default(),
                 Some(cap_decimal("10")),
+                Brand::default(),
             );
             let budget = frame_text(&app, 100, 24)
                 .lines()
@@ -1316,6 +1335,79 @@ mod tests {
 
     fn cap_decimal(value: &str) -> rust_decimal::Decimal {
         value.parse().unwrap()
+    }
+
+    fn branded_app(tagline: Option<&str>, comparison: bool) -> App {
+        App::new(
+            test_data(vec![test_event()]),
+            test_pricing(),
+            Theme::builtin_dark(),
+            ZeroCostBehavior::KeepZero,
+            no_input_options(),
+            Page::Overview,
+            TimeRange::All,
+            View::default(),
+            None,
+            Brand {
+                tagline: tagline.map(str::to_string),
+                show_comparison: comparison,
+                show_exit_art: true,
+            },
+        )
+    }
+
+    #[test]
+    fn a_configured_tagline_replaces_the_header_label() {
+        let frame = frame_text(&branded_app(Some("Ship it"), true), 100, 24);
+
+        assert!(frame.contains("Ship it"), "{frame}");
+        assert!(
+            !frame.contains("Favorite model:"),
+            "the generic label is replaced, not repeated: {frame}"
+        );
+    }
+
+    #[test]
+    fn unset_brand_values_render_exactly_as_today() {
+        let frame = frame_text(&branded_app(None, true), 100, 24);
+
+        assert!(frame.contains("Favorite model:"), "{frame}");
+    }
+
+    #[test]
+    fn turning_the_comparison_off_hides_its_sentence() {
+        let shown = frame_text(&branded_app(None, true), 100, 24);
+        let hidden = frame_text(&branded_app(None, false), 100, 24);
+
+        assert!(
+            shown.contains("About ") || shown.contains("No activity yet"),
+            "{shown}"
+        );
+        assert!(
+            !hidden.contains("About ") && !hidden.contains("No activity yet"),
+            "no sentence when off: {hidden}"
+        );
+    }
+
+    #[test]
+    fn the_share_summary_uses_the_configured_tagline() {
+        let branded = branded_app(Some("Ship it"), true);
+        let plain = branded_app(None, true);
+
+        assert!(
+            branded
+                .current_page_summary()
+                .starts_with("Ship it All time"),
+            "{}",
+            branded.current_page_summary()
+        );
+        assert!(
+            plain
+                .current_page_summary()
+                .starts_with("oc-stats All time"),
+            "{}",
+            plain.current_page_summary()
+        );
     }
 
     #[test]
@@ -1371,6 +1463,7 @@ mod tests {
             TimeRange::Last7Days,
             View::default(),
             None,
+            Brand::default(),
         );
 
         let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
@@ -1416,6 +1509,7 @@ mod tests {
             TimeRange::Last7Days,
             View::default(),
             None,
+            Brand::default(),
         );
 
         assert_eq!(app.page, Page::Sessions);

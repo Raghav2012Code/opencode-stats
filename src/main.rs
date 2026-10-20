@@ -47,6 +47,8 @@ async fn main() -> Result<()> {
     );
     let view = app_config.view.view();
     let budget_cap = app_config.budget.monthly_cap()?;
+    let brand = app_config.brand.brand()?;
+    let show_exit_art = brand.show_exit_art;
 
     if let Some(command) = cli.command {
         return run_command(command, database_path, cli.ignore_zero, view).await;
@@ -72,9 +74,12 @@ async fn main() -> Result<()> {
         range,
         view,
         budget_cap,
+        brand,
     );
     app.run().await?;
-    print_exit_art(theme_kind);
+    if show_exit_art {
+        print_exit_art(theme_kind);
+    }
     Ok(())
 }
 

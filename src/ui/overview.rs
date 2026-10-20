@@ -4,6 +4,7 @@ use ratatui::widgets::Paragraph;
 
 use crate::analytics::AnalyticsSnapshot;
 use crate::analytics::BudgetState;
+use crate::config::app_config::Brand;
 use crate::ui::theme::Theme;
 use crate::ui::widgets::common::metric_line;
 use crate::ui::widgets::heatmap::HeatmapWidget;
@@ -14,6 +15,7 @@ pub fn render_overview(
     area: Rect,
     snapshot: &AnalyticsSnapshot,
     budget: Option<&BudgetState>,
+    brand: &Brand,
     theme: &Theme,
 ) {
     let [heatmap, legend, spacer, favorite, stats, _, fun] = Layout::default()
@@ -49,18 +51,23 @@ pub fn render_overview(
         frame.render_widget(Paragraph::new(budget_line(budget, theme)), spacer);
     }
 
-    let favorite_model = snapshot
-        .models
-        .first()
-        .map(|row| row.id.clone())
-        .unwrap_or_else(|| "n/a".to_string());
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("Favorite model: ", theme.muted_style()),
-            Span::styled(favorite_model, theme.accent_style()),
-        ])),
-        favorite,
-    );
+    // A configured tagline replaces the header line; otherwise the favourite model
+    // shows exactly as before.
+    let header = match brand.tagline.as_deref() {
+        Some(tagline) => Line::from(Span::styled(tagline.to_string(), theme.accent_style())),
+        None => {
+            let favorite_model = snapshot
+                .models
+                .first()
+                .map(|row| row.id.clone())
+                .unwrap_or_else(|| "n/a".to_string());
+            Line::from(vec![
+                Span::styled("Favorite model: ", theme.muted_style()),
+                Span::styled(favorite_model, theme.accent_style()),
+            ])
+        }
+    };
+    frame.render_widget(Paragraph::new(header), favorite);
 
     let [left, right] = Layout::default()
         .direction(Direction::Horizontal)
@@ -113,13 +120,18 @@ pub fn render_overview(
     ]);
     frame.render_widget(Paragraph::new(right_text), right);
 
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            &snapshot.overview.fun_comparison,
-            theme.comparison_style(),
-        ))),
-        fun,
-    );
+    // With the comparison off the row stays blank, so the layout below never moves.
+    if brand.show_comparison {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                &snapshot.overview.fun_comparison,
+                theme.comparison_style(),
+            ))),
+            fun,
+        );
+    } else {
+        frame.render_widget(Paragraph::new(""), fun);
+    }
 }
 
 /// One line: what the month cost so far, the cap, and what is left. The over state is
