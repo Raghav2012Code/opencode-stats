@@ -509,6 +509,48 @@ db = "/tmp/opencode.db"
     }
 
     #[test]
+    fn every_example_in_the_config_reference_parses() {
+        // docs/config.md is the reference: each fenced TOML block is a complete config,
+        // so a stale example breaks the build instead of misleading a reader. Exactly one
+        // block is intentionally invalid, demonstrating the startup error.
+        let doc = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/config.md"))
+            .expect("the config reference is part of the repository");
+
+        let mut blocks = Vec::new();
+        let mut rest = doc.as_str();
+        while let Some(start) = rest.find("```toml") {
+            let after = &rest[start + "```toml".len()..];
+            let end = after.find("```").expect("every fence closes");
+            blocks.push(after[..end].trim().to_string());
+            rest = &after[end + "```".len()..];
+        }
+
+        assert!(
+            blocks.len() >= 6,
+            "the reference shows every section, found {} TOML blocks",
+            blocks.len()
+        );
+
+        let mut validated = 0;
+        for block in &blocks {
+            let config: AppConfig = toml::from_str(block)
+                .unwrap_or_else(|_| panic!("example does not parse:\n{block}"));
+            if block.contains("graphs") {
+                assert!(
+                    config.validate().is_err(),
+                    "the intentionally invalid example still fails"
+                );
+            } else {
+                config
+                    .validate()
+                    .unwrap_or_else(|_| panic!("example does not validate:\n{block}"));
+                validated += 1;
+            }
+        }
+        assert!(validated >= 5, "most examples are valid configs");
+    }
+
+    #[test]
     fn load_rejects_invalid_choices_before_anything_uses_them() {
         // `validate` is what `load` runs, so a typo is an error at startup for every
         // invocation, including the scripted ones that never read the page or range.

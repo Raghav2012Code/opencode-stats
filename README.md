@@ -196,6 +196,8 @@ light = "light"
 
 The database is chosen in this order, most specific first: `--db`, then `[app] db`, then `OC_STATS_DB_PATH`, then discovery of the standard locations. Both named forms are authoritative — the path is used or reported missing, never quietly replaced by another database. An invalid value stops the program at startup and names the key and the values it accepts.
 
+The full reference — every section, its values and defaults, plus copy-pasteable recipes — is in [`docs/config.md`](docs/config.md).
+
 ### Scriptable stats
 
 Print what the dashboard shows, for scripts and statuslines. Same numbers as the TUI, one line by default:
