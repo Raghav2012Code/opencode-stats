@@ -14,7 +14,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 use color_eyre::eyre::{Context, ContextCompat, Result, bail};
 
-use crate::analytics::build_snapshot;
+use crate::analytics::view::View;
 use crate::cache::models_cache::{PricingCatalog, default_cache_path, refresh_pricing_catalog};
 use crate::config::app_config::AppConfig;
 use crate::config::theme_config::ThemeCatalog;
@@ -45,9 +45,10 @@ async fn main() -> Result<()> {
         cli.database_path,
         app_config.app.database_path().map(PathBuf::from),
     );
+    let view = app_config.view.view();
 
     if let Some(command) = cli.command {
-        return run_command(command, database_path, cli.ignore_zero).await;
+        return run_command(command, database_path, cli.ignore_zero, view).await;
     }
 
     let page = app_config.app.page()?;
@@ -68,6 +69,7 @@ async fn main() -> Result<()> {
         input_options,
         page,
         range,
+        view,
     );
     app.run().await?;
     print_exit_art(theme_kind);
@@ -182,6 +184,7 @@ async fn run_command(
     command: Command,
     database_path: Option<PathBuf>,
     ignore_zero: bool,
+    view: View,
 ) -> Result<()> {
     match command {
         Command::Stats { range, format, out } => {
@@ -195,11 +198,12 @@ async fn run_command(
                 }
             };
             let pricing = PricingCatalog::load().wrap_err("failed to load pricing catalog")?;
-            let snapshot = build_snapshot(
+            let snapshot = crate::analytics::build_snapshot_view(
                 &data,
                 &pricing,
                 range,
                 ZeroCostBehavior::from_ignore_zero(ignore_zero),
+                view,
             );
             let content = match stats_content(format, &snapshot, range) {
                 Ok(content) => content,

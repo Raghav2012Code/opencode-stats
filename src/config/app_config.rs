@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::analytics::view::View;
 use crate::config;
 use crate::config::errors::{Error, Result};
 use crate::ui::app::Page;
@@ -13,6 +14,22 @@ use crate::utils::time::TimeRange;
 pub struct AppConfig {
     pub theme: ThemeConfig,
     pub app: AppSection,
+    pub view: ViewSection,
+}
+
+/// What to leave out of the picture. Every filter is off unless asked for.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ViewSection {
+    pub hide_zero_cost: bool,
+}
+
+impl ViewSection {
+    pub fn view(&self) -> View {
+        View {
+            hide_zero_cost: self.hide_zero_cost,
+        }
+    }
 }
 
 /// Optional startup choices. Every value absent means today's behaviour: the Overview
@@ -184,6 +201,22 @@ db = "/tmp/opencode.db"
     fn rejects_unknown_fields_in_the_app_section() {
         let parsed = toml::from_str::<AppConfig>("[app]\npagez = \"overview\"\n").unwrap_err();
         assert!(format!("{parsed:#}").contains("unknown field"));
+    }
+
+    #[test]
+    fn the_view_section_is_off_unless_asked() {
+        assert!(!AppConfig::default().view.hide_zero_cost);
+        assert_eq!(AppConfig::default().view.view().label(), None);
+
+        let parsed: AppConfig = toml::from_str("[view]\nhide_zero_cost = true\n").unwrap();
+        assert!(parsed.view.hide_zero_cost);
+        assert_eq!(parsed.view.view().label(), Some("hiding zero-cost rows"));
+    }
+
+    #[test]
+    fn rejects_unknown_fields_in_the_view_section() {
+        let err = toml::from_str::<AppConfig>("[view]\nhide_free_models = true\n").unwrap_err();
+        assert!(format!("{err:#}").contains("unknown field"));
     }
 
     #[test]

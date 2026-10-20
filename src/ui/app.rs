@@ -13,7 +13,8 @@ use ratatui::{DefaultTerminal, Frame, Terminal, TerminalOptions, Viewport, backe
 use tokio::sync::mpsc;
 
 use crate::analytics::model_stats::UsageRow;
-use crate::analytics::{AnalyticsSnapshot, build_snapshot};
+use crate::analytics::view::View;
+use crate::analytics::{AnalyticsSnapshot, build_snapshot_view};
 use crate::cache::models_cache::{PricingCatalog, refresh_remote_models};
 use crate::db::models::{AppData, InputOptions};
 use crate::db::queries::load_app_data;
@@ -126,6 +127,7 @@ pub struct App {
     pub range: TimeRange,
     pub theme: Theme,
     pub zero_cost_behavior: ZeroCostBehavior,
+    pub view: View,
     pub should_quit: bool,
     status_message: Option<StatusMessage>,
     pub focused_index: usize,
@@ -139,6 +141,7 @@ pub struct App {
 }
 
 impl App {
+    #[allow(clippy::too_many_arguments)] // a constructor wiring independent collaborators
     pub fn new(
         data: AppData,
         pricing: PricingCatalog,
@@ -147,6 +150,7 @@ impl App {
         input_options: InputOptions,
         page: Page,
         range: TimeRange,
+        view: View,
     ) -> Self {
         // The overview is always all time; the chosen range applies to the list pages.
         let initial_range = if page.uses_range() {
@@ -154,7 +158,8 @@ impl App {
         } else {
             TimeRange::All
         };
-        let snapshot = build_snapshot(&data, &pricing, initial_range, zero_cost_behavior);
+        let snapshot =
+            build_snapshot_view(&data, &pricing, initial_range, zero_cost_behavior, view);
         let (sender, receiver) = mpsc::unbounded_channel();
         let (clipboard_sender, clipboard_updates) = mpsc::unbounded_channel();
         if pricing.refresh_needed {
@@ -170,6 +175,7 @@ impl App {
             range,
             theme,
             zero_cost_behavior,
+            view,
             should_quit: false,
             status_message: None,
             focused_index: 0,
@@ -268,11 +274,12 @@ impl App {
     }
 
     fn recompute(&mut self) {
-        self.snapshot = build_snapshot(
+        self.snapshot = crate::analytics::build_snapshot_view(
             &self.data,
             &self.pricing,
             self.effective_range(),
             self.zero_cost_behavior,
+            self.view,
         );
     }
 
@@ -432,7 +439,15 @@ impl App {
     /// the timestamp here leaves the footer free for hints and status, and it never has to
     /// be shortened to make room for them.
     fn divider_line(&self, width: u16, theme: &Theme) -> ratatui::text::Line<'static> {
-        let stamp = format!("{LOADED_LABEL}{}", self.last_read.format("%H:%M:%S"));
+        let mut stamp = String::new();
+        if let Some(filter) = self.view.label() {
+            stamp.push_str(filter);
+            stamp.push_str("  ");
+        }
+        stamp.push_str(&format!(
+            "{LOADED_LABEL}{}",
+            self.last_read.format("%H:%M:%S")
+        ));
         let stamp_width = stamp.chars().count() + 2;
         let rule_width = (width as usize).saturating_sub(stamp_width);
 
@@ -915,6 +930,7 @@ mod tests {
             input_options,
             Page::Overview,
             TimeRange::All,
+            View::default(),
         )
     }
 
@@ -933,6 +949,7 @@ mod tests {
             no_input_options(),
             page,
             range,
+            View::default(),
         )
     }
 
@@ -1128,6 +1145,42 @@ mod tests {
     }
 
     #[test]
+    fn an_active_filter_is_stated_on_the_rule() {
+        let data = test_data(vec![test_event()]);
+        let filtered = App::new(
+            data.clone(),
+            test_pricing(),
+            Theme::builtin_dark(),
+            ZeroCostBehavior::KeepZero,
+            no_input_options(),
+            Page::Overview,
+            TimeRange::All,
+            View {
+                hide_zero_cost: true,
+            },
+        );
+
+        let rule = frame_text(&filtered, 100, 24)
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        assert!(rule.contains("hiding zero-cost rows"), "{rule:?}");
+        assert!(rule.contains("Loaded "), "{rule:?}");
+
+        let plain = test_app(data, no_input_options());
+        let rule = frame_text(&plain, 100, 24)
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            !rule.contains("hiding zero-cost rows"),
+            "no filter, no notice: {rule:?}"
+        );
+    }
+
+    #[test]
     fn the_read_time_rides_the_rule_and_leaves_the_footer_to_the_hints() {
         let app = app_with(Page::Models, TimeRange::All, vec![test_event()]);
         let frame = frame_text(&app, 100, 24);
@@ -1178,6 +1231,7 @@ mod tests {
             no_input_options(),
             Page::Sessions,
             TimeRange::Last7Days,
+            View::default(),
         );
 
         let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
@@ -1221,6 +1275,7 @@ mod tests {
             no_input_options(),
             Page::Sessions,
             TimeRange::Last7Days,
+            View::default(),
         );
 
         assert_eq!(app.page, Page::Sessions);
