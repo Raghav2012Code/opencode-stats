@@ -321,76 +321,45 @@ fn focus_line(
     ])
 }
 
-fn render_detail(frame: &mut ratatui::Frame<'_>, area: Rect, row: &UsageRow, theme: &Theme) {
-    let rows = layout_rows::<5, 2>(area);
+/// The one metric grid every page's detail pane uses: label and value pairs laid out
+/// row-major across five rows of two columns.
+fn render_metric_grid(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    pairs: &[(&str, String)],
+    theme: &Theme,
+) {
+    let cells = layout_rows::<5, 2>(area);
 
-    frame.render_widget(
-        Paragraph::new(metric_line(
-            "Total tokens: ",
-            format_tokens(row.total_tokens),
-            theme,
-        )),
-        rows[0][0],
-    );
-    frame.render_widget(
-        Paragraph::new(metric_line(
-            "Total cost: ",
-            format_price_summary(&row.cost),
-            theme,
-        )),
-        rows[0][1],
-    );
-    frame.render_widget(
-        Paragraph::new(metric_line(
-            "Input: ",
-            format_tokens(row.input_tokens),
-            theme,
-        )),
-        rows[1][0],
-    );
-    frame.render_widget(
-        Paragraph::new(metric_line("Sessions: ", row.sessions.to_string(), theme)),
-        rows[1][1],
-    );
-    frame.render_widget(
-        Paragraph::new(metric_line(
-            "Output: ",
-            format_tokens(row.output_tokens),
-            theme,
-        )),
-        rows[2][0],
-    );
-    frame.render_widget(
-        Paragraph::new(metric_line("Messages: ", row.messages.to_string(), theme)),
-        rows[2][1],
-    );
-    frame.render_widget(
-        Paragraph::new(metric_line(
-            "Cache: ",
-            format_tokens(row.cache_tokens),
-            theme,
-        )),
-        rows[3][0],
-    );
-    frame.render_widget(
-        Paragraph::new(metric_line("Prompts: ", row.prompts.to_string(), theme)),
-        rows[3][1],
-    );
-    frame.render_widget(
-        Paragraph::new(metric_line(
-            "Rate: ",
-            format!("{:.2} tok/s", row.p50_output_tokens_per_second),
-            theme,
-        )),
-        rows[4][0],
-    );
-    frame.render_widget(
-        Paragraph::new(metric_line(
-            "Active days: ",
-            row.active_days.to_string(),
-            theme,
-        )),
-        rows[4][1],
+    for (index, (label, value)) in pairs.iter().take(cells.len() * cells[0].len()).enumerate() {
+        let cell = cells[index / cells[0].len()][index % cells[0].len()];
+        frame.render_widget(
+            Paragraph::new(metric_line(label, value.clone(), theme)),
+            cell,
+        );
+    }
+}
+
+fn render_detail(frame: &mut ratatui::Frame<'_>, area: Rect, row: &UsageRow, theme: &Theme) {
+    render_metric_grid(
+        frame,
+        area,
+        &[
+            ("Total tokens: ", format_tokens(row.total_tokens)),
+            ("Total cost: ", format_price_summary(&row.cost)),
+            ("Input: ", format_tokens(row.input_tokens)),
+            ("Sessions: ", row.sessions.to_string()),
+            ("Output: ", format_tokens(row.output_tokens)),
+            ("Messages: ", row.messages.to_string()),
+            ("Cache: ", format_tokens(row.cache_tokens)),
+            ("Prompts: ", row.prompts.to_string()),
+            (
+                "Rate: ",
+                format!("{:.2} tok/s", row.p50_output_tokens_per_second),
+            ),
+            ("Active days: ", row.active_days.to_string()),
+        ],
+        theme,
     );
 }
 
@@ -664,77 +633,27 @@ fn render_session_detail(
     row: &SessionUsageRow,
     theme: &Theme,
 ) {
-    let detail = layout_rows::<5, 2>(area);
-
-    frame.render_widget(
-        Paragraph::new(metric_line(
-            "Total tokens: ",
-            format_tokens(row.total_tokens),
-            theme,
-        )),
-        detail[0][0],
-    );
-    frame.render_widget(
-        Paragraph::new(metric_line(
-            "Total cost: ",
-            format_price_summary(&row.cost),
-            theme,
-        )),
-        detail[0][1],
-    );
-    frame.render_widget(
-        Paragraph::new(metric_line(
-            "Input: ",
-            format_tokens(row.input_tokens),
-            theme,
-        )),
-        detail[1][0],
-    );
-    frame.render_widget(
-        Paragraph::new(metric_line(
-            "Output: ",
-            format_tokens(row.output_tokens),
-            theme,
-        )),
-        detail[1][1],
-    );
-    frame.render_widget(
-        Paragraph::new(metric_line(
-            "Cache: ",
-            format_tokens(row.cache_tokens),
-            theme,
-        )),
-        detail[2][0],
-    );
-    frame.render_widget(
-        Paragraph::new(metric_line("Messages: ", row.messages.to_string(), theme)),
-        detail[2][1],
-    );
-    frame.render_widget(
-        Paragraph::new(metric_line("Prompts: ", row.prompts.to_string(), theme)),
-        detail[3][0],
-    );
-    frame.render_widget(
-        Paragraph::new(metric_line(
-            "Elapsed: ",
-            row.elapsed_secs()
-                .map(format_duration)
-                .unwrap_or_else(|| "—".to_string()),
-            theme,
-        )),
-        detail[3][1],
-    );
-    frame.render_widget(
-        Paragraph::new(metric_line("Project: ", row.project.clone(), theme)),
-        detail[4][0],
-    );
-    frame.render_widget(
-        Paragraph::new(metric_line(
-            "Active days: ",
-            row.active_days.to_string(),
-            theme,
-        )),
-        detail[4][1],
+    render_metric_grid(
+        frame,
+        area,
+        &[
+            ("Total tokens: ", format_tokens(row.total_tokens)),
+            ("Total cost: ", format_price_summary(&row.cost)),
+            ("Input: ", format_tokens(row.input_tokens)),
+            ("Output: ", format_tokens(row.output_tokens)),
+            ("Cache: ", format_tokens(row.cache_tokens)),
+            ("Messages: ", row.messages.to_string()),
+            ("Prompts: ", row.prompts.to_string()),
+            (
+                "Elapsed: ",
+                row.elapsed_secs()
+                    .map(format_duration)
+                    .unwrap_or_else(|| "—".to_string()),
+            ),
+            ("Project: ", row.project.clone()),
+            ("Active days: ", row.active_days.to_string()),
+        ],
+        theme,
     );
 }
 
