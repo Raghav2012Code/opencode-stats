@@ -10,11 +10,12 @@ use ratatui::layout::{Constraint, Layout};
 use ratatui::prelude::CrosstermBackend;
 use ratatui::widgets::{Block, Padding};
 use ratatui::{DefaultTerminal, Frame, Terminal, TerminalOptions, Viewport, backend::TestBackend};
+use rust_decimal::Decimal;
 use tokio::sync::mpsc;
 
 use crate::analytics::model_stats::UsageRow;
 use crate::analytics::view::View;
-use crate::analytics::{AnalyticsSnapshot, build_snapshot_view};
+use crate::analytics::{AnalyticsSnapshot, BudgetState, build_snapshot_view};
 use crate::cache::models_cache::{PricingCatalog, refresh_remote_models};
 use crate::db::models::{AppData, InputOptions};
 use crate::db::queries::load_app_data;
@@ -128,6 +129,8 @@ pub struct App {
     pub theme: Theme,
     pub zero_cost_behavior: ZeroCostBehavior,
     pub view: View,
+    budget_cap: Option<Decimal>,
+    budget: Option<BudgetState>,
     pub should_quit: bool,
     status_message: Option<StatusMessage>,
     pub focused_index: usize,
@@ -151,6 +154,7 @@ impl App {
         page: Page,
         range: TimeRange,
         view: View,
+        budget_cap: Option<Decimal>,
     ) -> Self {
         // The overview is always all time; the chosen range applies to the list pages.
         let initial_range = if page.uses_range() {
@@ -176,6 +180,8 @@ impl App {
             theme,
             zero_cost_behavior,
             view,
+            budget_cap,
+            budget: None,
             should_quit: false,
             status_message: None,
             focused_index: 0,
@@ -187,6 +193,7 @@ impl App {
             clipboard_updates,
             copy_in_progress: false,
         };
+        app.refresh_budget();
 
         let notices = [
             app.data.import_stats.summary(),
@@ -281,6 +288,22 @@ impl App {
             self.zero_cost_behavior,
             self.view,
         );
+        self.refresh_budget();
+    }
+
+    /// What the month has cost so far against the configured cap. Recomputed with the
+    /// snapshot because both answer the same data, and the budget ignores the range the
+    /// pages are showing.
+    fn refresh_budget(&mut self) {
+        self.budget = self.budget_cap.map(|cap| BudgetState {
+            cap,
+            spend: crate::analytics::month_spend(
+                &self.data.events,
+                &self.pricing,
+                self.zero_cost_behavior,
+                crate::utils::time::current_local_date(),
+            ),
+        });
     }
 
     /// The range the current page is drawn with. The overview ignores the selection and is
@@ -352,7 +375,9 @@ impl App {
         frame.render_widget(ratatui::widgets::Paragraph::new(""), spacer);
 
         match self.page {
-            Page::Overview => render_overview(frame, body, &self.snapshot, theme),
+            Page::Overview => {
+                render_overview(frame, body, &self.snapshot, self.budget.as_ref(), theme);
+            }
             Page::Models => render_models(
                 frame,
                 body,
@@ -931,6 +956,7 @@ mod tests {
             Page::Overview,
             TimeRange::All,
             View::default(),
+            None,
         )
     }
 
@@ -950,6 +976,7 @@ mod tests {
             page,
             range,
             View::default(),
+            None,
         )
     }
 
@@ -1158,6 +1185,7 @@ mod tests {
             View {
                 hide_zero_cost: true,
             },
+            None,
         );
 
         let rule = frame_text(&filtered, 100, 24)
@@ -1178,6 +1206,116 @@ mod tests {
             !rule.contains("hiding zero-cost rows"),
             "no filter, no notice: {rule:?}"
         );
+    }
+
+    #[test]
+    fn the_budget_line_reports_spend_cap_and_remainder() {
+        let now = Local::now();
+        let mut event = test_event();
+        event.created_at = Some(now);
+        event.session_started_at = Some(now);
+        event.stored_cost_usd = Some(rust_decimal::Decimal::new(3, 0));
+
+        let under = App::new(
+            test_data(vec![event.clone()]),
+            test_pricing(),
+            Theme::builtin_dark(),
+            ZeroCostBehavior::KeepZero,
+            no_input_options(),
+            Page::Overview,
+            TimeRange::All,
+            View::default(),
+            Some(cap_decimal("10")),
+        );
+        let frame = frame_text(&under, 100, 24);
+        assert!(
+            frame.contains("Budget: $3.00 of $10.00 · $7.00 left"),
+            "under: {frame}"
+        );
+
+        let exact = App::new(
+            test_data(vec![event.clone()]),
+            test_pricing(),
+            Theme::builtin_dark(),
+            ZeroCostBehavior::KeepZero,
+            no_input_options(),
+            Page::Overview,
+            TimeRange::All,
+            View::default(),
+            Some(cap_decimal("3")),
+        );
+        assert!(
+            frame_text(&exact, 100, 24).contains("Budget: $3.00 of $3.00 · at cap"),
+            "exactly at"
+        );
+
+        let over = App::new(
+            test_data(vec![event]),
+            test_pricing(),
+            Theme::builtin_dark(),
+            ZeroCostBehavior::KeepZero,
+            no_input_options(),
+            Page::Overview,
+            TimeRange::All,
+            View::default(),
+            Some(cap_decimal("2")),
+        );
+        let frame = frame_text(&over, 100, 24);
+        assert!(
+            frame.contains("Budget: $3.00 of $2.00") && frame.contains("OVER by $1.00"),
+            "over, visually distinct: {frame}"
+        );
+    }
+
+    #[test]
+    fn the_budget_does_not_move_when_the_range_changes() {
+        let now = Local::now();
+        let mut event = test_event();
+        event.created_at = Some(now);
+        event.session_started_at = Some(now);
+        event.stored_cost_usd = Some(rust_decimal::Decimal::ONE);
+
+        let mut lines = Vec::new();
+        for range in [TimeRange::All, TimeRange::Today, TimeRange::Last7Days] {
+            let app = App::new(
+                test_data(vec![event.clone()]),
+                test_pricing(),
+                Theme::builtin_dark(),
+                ZeroCostBehavior::KeepZero,
+                no_input_options(),
+                Page::Overview,
+                range,
+                View::default(),
+                Some(cap_decimal("10")),
+            );
+            let budget = frame_text(&app, 100, 24)
+                .lines()
+                .find(|line| line.contains("Budget:"))
+                .unwrap_or_default()
+                .to_string();
+            lines.push(budget);
+        }
+
+        assert_eq!(lines.len(), 3);
+        assert!(
+            lines.iter().all(|line| line == &lines[0]),
+            "same line whatever the range: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn no_budget_configured_renders_no_budget_line() {
+        let app = test_app(test_data(vec![test_event()]), no_input_options());
+        let frame = frame_text(&app, 100, 24);
+
+        assert!(
+            !frame.contains("Budget:"),
+            "byte-identical behaviour: {frame}"
+        );
+    }
+
+    fn cap_decimal(value: &str) -> rust_decimal::Decimal {
+        value.parse().unwrap()
     }
 
     #[test]
@@ -1232,6 +1370,7 @@ mod tests {
             Page::Sessions,
             TimeRange::Last7Days,
             View::default(),
+            None,
         );
 
         let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
@@ -1276,6 +1415,7 @@ mod tests {
             Page::Sessions,
             TimeRange::Last7Days,
             View::default(),
+            None,
         );
 
         assert_eq!(app.page, Page::Sessions);

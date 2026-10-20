@@ -46,6 +46,7 @@ async fn main() -> Result<()> {
         app_config.app.database_path().map(PathBuf::from),
     );
     let view = app_config.view.view();
+    let budget_cap = app_config.budget.monthly_cap()?;
 
     if let Some(command) = cli.command {
         return run_command(command, database_path, cli.ignore_zero, view).await;
@@ -70,6 +71,7 @@ async fn main() -> Result<()> {
         page,
         range,
         view,
+        budget_cap,
     );
     app.run().await?;
     print_exit_art(theme_kind);

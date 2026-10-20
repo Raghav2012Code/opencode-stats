@@ -4,7 +4,9 @@ pub mod view;
 
 use std::collections::BTreeSet;
 
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
+
+use rust_decimal::Decimal;
 
 use crate::analytics::heatmap_data::{HeatmapData, build_heatmap_data};
 use crate::analytics::model_stats::{
@@ -200,6 +202,44 @@ fn hide_zero_cost_models(
     events.retain(|event| !hidden.contains(event.model_id.as_str()));
 }
 
+/// What the user has spent in the budget's month, and what the cap is.
+#[derive(Clone, Debug)]
+pub struct BudgetState {
+    pub cap: Decimal,
+    pub spend: PriceSummary,
+}
+
+impl BudgetState {
+    pub fn remainder(&self) -> Decimal {
+        self.cap - self.spend.known
+    }
+
+    pub fn is_over(&self) -> bool {
+        self.spend.known > self.cap
+    }
+}
+
+/// The cost of the events in the same calendar month as `today`, using the same rule
+/// the overview uses for every row. The range selector plays no part: a budget answers
+/// what has been spent this month, whatever window the pages are showing.
+pub fn month_spend(
+    events: &[UsageEvent],
+    pricing: &PricingCatalog,
+    zero_cost_behavior: ZeroCostBehavior,
+    today: NaiveDate,
+) -> PriceSummary {
+    let mut spend = PriceSummary::default();
+    for event in events {
+        let in_month = event
+            .activity_date()
+            .is_some_and(|date| date.year() == today.year() && date.month() == today.month());
+        if in_month {
+            update_price_summary(&mut spend, pricing, event, zero_cost_behavior);
+        }
+    }
+    spend
+}
+
 fn filter_events(events: &[UsageEvent], range: TimeRange, today: NaiveDate) -> Vec<&UsageEvent> {
     events
         .iter()
@@ -265,7 +305,7 @@ mod tests {
         AppData, ImportStats, MessageRecord, SessionRecord, TokenUsage, UsageEvent,
     };
     use crate::utils::pricing::ZeroCostBehavior;
-    use crate::utils::time::TimeRange;
+    use crate::utils::time::{TimeRange, current_local_date};
     use chrono::{Local, TimeZone};
     use rust_decimal::Decimal;
     use std::collections::BTreeMap;
@@ -427,6 +467,56 @@ mod tests {
             without.overview.total_cost.known,
             with_default.overview.total_cost.known
         );
+    }
+
+    #[test]
+    fn month_spend_counts_only_the_current_calendar_month() {
+        let today = current_local_date();
+        let now = Local::now();
+        let mut this_month = event_with("this-month", "acme", Some(Decimal::new(3, 0)), 100);
+        this_month.created_at = Some(now);
+        this_month.session_started_at = Some(now);
+
+        let mut last_month = event_with("last-month", "acme", Some(Decimal::new(7, 0)), 200);
+        let forty_days_ago = today - chrono::Duration::days(40);
+        let stamp = forty_days_ago
+            .and_hms_opt(9, 0, 0)
+            .unwrap()
+            .and_local_timezone(Local)
+            .unwrap();
+        last_month.created_at = Some(stamp);
+        last_month.session_started_at = Some(stamp);
+
+        let spend = super::month_spend(
+            &[this_month, last_month],
+            &empty_catalog(),
+            ZeroCostBehavior::KeepZero,
+            today,
+        );
+
+        assert_eq!(spend.known, Decimal::new(3, 0));
+        assert!(spend.has_known);
+    }
+
+    #[test]
+    fn month_spend_ignores_the_range_by_construction() {
+        // The function takes no range: whatever the pages show, the budget answers the month.
+        let today = current_local_date();
+        let mut event = event_with("m", "acme", Some(Decimal::ONE), 10);
+        let now = Local::now();
+        event.created_at = Some(now);
+        event.session_started_at = Some(now);
+
+        for range in [TimeRange::All, TimeRange::Today, TimeRange::Last7Days] {
+            let _ = range;
+            let spend = super::month_spend(
+                std::slice::from_ref(&event),
+                &empty_catalog(),
+                ZeroCostBehavior::KeepZero,
+                today,
+            );
+            assert_eq!(spend.known, Decimal::ONE);
+        }
     }
 
     #[test]

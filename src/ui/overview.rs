@@ -3,15 +3,17 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
 
 use crate::analytics::AnalyticsSnapshot;
+use crate::analytics::BudgetState;
 use crate::ui::theme::Theme;
 use crate::ui::widgets::common::metric_line;
 use crate::ui::widgets::heatmap::HeatmapWidget;
-use crate::utils::formatting::{format_price_summary, format_tokens};
+use crate::utils::formatting::{format_price_summary, format_tokens, format_usd_precise};
 
 pub fn render_overview(
     frame: &mut ratatui::Frame<'_>,
     area: Rect,
     snapshot: &AnalyticsSnapshot,
+    budget: Option<&BudgetState>,
     theme: &Theme,
 ) {
     let [heatmap, legend, spacer, favorite, stats, _, fun] = Layout::default()
@@ -40,6 +42,12 @@ pub fn render_overview(
         legend,
     );
     frame.render_widget(Paragraph::new(""), spacer);
+
+    // The budget line takes the spacer row, so the layout below never moves and a
+    // dashboard without a budget draws exactly as before.
+    if let Some(budget) = budget {
+        frame.render_widget(Paragraph::new(budget_line(budget, theme)), spacer);
+    }
 
     let favorite_model = snapshot
         .models
@@ -112,4 +120,87 @@ pub fn render_overview(
         ))),
         fun,
     );
+}
+
+/// One line: what the month cost so far, the cap, and what is left. The over state is
+/// the only one that raises its voice, in the accent style.
+fn budget_line(budget: &BudgetState, theme: &Theme) -> Line<'static> {
+    let spent = format_usd_precise(budget.spend.known);
+    let cap = format_usd_precise(budget.cap);
+    let mut spans = vec![
+        Span::styled("Budget: ", theme.muted_style()),
+        Span::styled(format!("{spent} of {cap}"), theme.muted_style()),
+    ];
+
+    if budget.is_over() {
+        spans.push(Span::styled(
+            format!(
+                " · OVER by {}",
+                format_usd_precise(budget.remainder().abs())
+            ),
+            theme.accent_style(),
+        ));
+    } else {
+        let remainder = budget.remainder();
+        let tail = if remainder.is_zero() {
+            " · at cap".to_string()
+        } else {
+            format!(" · {} left", format_usd_precise(remainder))
+        };
+        spans.push(Span::styled(tail, theme.muted_style()));
+    }
+
+    Line::from(spans)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BudgetState, budget_line};
+    use crate::ui::theme::Theme;
+    use crate::utils::pricing::PriceSummary;
+    use rust_decimal::Decimal;
+
+    fn state(spent: &str, cap: &str) -> BudgetState {
+        BudgetState {
+            cap: cap.parse().unwrap(),
+            spend: PriceSummary {
+                known: spent.parse().unwrap(),
+                has_known: true,
+                missing: false,
+            },
+        }
+    }
+
+    fn text(state: &BudgetState) -> String {
+        let theme = Theme::builtin_dark();
+        budget_line(state, &theme)
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
+    }
+
+    #[test]
+    fn states_have_the_intended_words() {
+        assert_eq!(
+            text(&state("3", "10")),
+            "Budget: $3.00 of $10.00 · $7.00 left"
+        );
+        assert_eq!(
+            text(&state("10", "10")),
+            "Budget: $10.00 of $10.00 · at cap"
+        );
+        assert_eq!(
+            text(&state("12", "10")),
+            "Budget: $12.00 of $10.00 · OVER by $2.00"
+        );
+    }
+
+    #[test]
+    fn the_state_knows_its_own_arithmetic() {
+        assert!(!state("9", "10").is_over());
+        assert!(!state("10", "10").is_over());
+        assert!(state("11", "10").is_over());
+        assert_eq!(state("4", "10").remainder(), Decimal::new(6, 0));
+    }
 }

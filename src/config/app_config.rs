@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use rust_decimal::Decimal;
 use serde::Deserialize;
 
 use crate::analytics::view::View;
@@ -15,6 +16,39 @@ pub struct AppConfig {
     pub theme: ThemeConfig,
     pub app: AppSection,
     pub view: ViewSection,
+    pub budget: BudgetSection,
+}
+
+/// A monthly spending cap in US dollars. Absent means no budget line.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct BudgetSection {
+    pub monthly: Option<f64>,
+}
+
+impl BudgetSection {
+    pub fn monthly_cap(&self) -> Result<Option<Decimal>> {
+        match self.monthly {
+            None => Ok(None),
+            Some(value) => {
+                let cap = Decimal::from_f64_retain(value).ok_or_else(|| {
+                    Error::invalid_app_value(
+                        "[budget] monthly",
+                        value.to_string(),
+                        &["a non-negative USD amount"],
+                    )
+                })?;
+                if cap.is_sign_negative() {
+                    return Err(Error::invalid_app_value(
+                        "[budget] monthly",
+                        value.to_string(),
+                        &["a non-negative USD amount"],
+                    ));
+                }
+                Ok(Some(cap))
+            }
+        }
+    }
 }
 
 /// What to leave out of the picture. Every filter is off unless asked for.
@@ -105,6 +139,7 @@ impl AppConfig {
     pub fn validate(&self) -> Result<()> {
         self.app.page()?;
         self.app.range()?;
+        self.budget.monthly_cap()?;
         Ok(())
     }
 }
@@ -115,6 +150,7 @@ mod tests {
     use crate::ui::app::Page;
     use crate::ui::theme::ThemeMode;
     use crate::utils::time::TimeRange;
+    use rust_decimal::Decimal;
 
     #[test]
     fn defaults_match_builtin_theme_names() {
@@ -216,6 +252,38 @@ db = "/tmp/opencode.db"
     #[test]
     fn rejects_unknown_fields_in_the_view_section() {
         let err = toml::from_str::<AppConfig>("[view]\nhide_free_models = true\n").unwrap_err();
+        assert!(format!("{err:#}").contains("unknown field"));
+    }
+
+    #[test]
+    fn an_absent_budget_means_no_cap() {
+        assert_eq!(AppConfig::default().budget.monthly_cap().unwrap(), None);
+
+        let empty: AppConfig = toml::from_str("[app]\n").unwrap();
+        assert_eq!(empty.budget.monthly_cap().unwrap(), None);
+    }
+
+    #[test]
+    fn parses_a_monthly_budget() {
+        let parsed: AppConfig = toml::from_str("[budget]\nmonthly = 50\n").unwrap();
+        assert_eq!(
+            parsed.budget.monthly_cap().unwrap(),
+            Some(Decimal::new(50, 0))
+        );
+    }
+
+    #[test]
+    fn a_negative_budget_fails_naming_the_key() {
+        let parsed: AppConfig = toml::from_str("[budget]\nmonthly = -5\n").unwrap();
+        let message = format!("{}", parsed.budget.monthly_cap().unwrap_err());
+
+        assert!(message.contains("[budget] monthly"), "{message}");
+        assert!(message.contains("non-negative"), "{message}");
+    }
+
+    #[test]
+    fn rejects_unknown_fields_in_the_budget_section() {
+        let err = toml::from_str::<AppConfig>("[budget]\nweekly = 10\n").unwrap_err();
         assert!(format!("{err:#}").contains("unknown field"));
     }
 
