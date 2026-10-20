@@ -7,7 +7,7 @@ use ratatui::widgets::Paragraph;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::analytics::AnalyticsSnapshot;
-use crate::analytics::model_stats::{ModelChartData, SessionUsageRow, UsageRow, chart_with_focus};
+use crate::analytics::model_stats::{SessionUsageRow, UsageRow, chart_with_focus};
 use crate::ui::theme::Theme;
 use crate::ui::widgets::common::{metric_line, truncate_label};
 use crate::ui::widgets::linechart::build_chart;
@@ -168,10 +168,12 @@ pub fn render_models(
     render_list_page(
         frame,
         area,
-        &snapshot.models,
-        "model",
-        focused_index,
-        search,
+        PageContext {
+            rows: &snapshot.models,
+            noun: "model",
+            focused_index,
+            search,
+        },
         theme,
         |frame, body, focus| {
             let focused_id = focus
@@ -236,13 +238,19 @@ impl ListRow for SessionUsageRow {
 /// The one list page: the layout, which row the search points at, and the choice between
 /// the search overlay, the focus line with its detail pane, and the empty state. The page
 /// supplies its body and its detail pane, which are the only things that differ.
+/// What a list page is showing: the rows, what to call them when there are none, which one
+/// is focused, and the search overlay if one is open.
+struct PageContext<'a, R> {
+    rows: &'a [R],
+    noun: &'a str,
+    focused_index: usize,
+    search: Option<&'a SearchState>,
+}
+
 fn render_list_page<R, B, D>(
     frame: &mut ratatui::Frame<'_>,
     area: Rect,
-    rows: &[R],
-    noun: &str,
-    focused_index: usize,
-    search: Option<&SearchState>,
+    page: PageContext<'_, R>,
     theme: &Theme,
     draw_body: B,
     draw_detail: D,
@@ -251,6 +259,13 @@ fn render_list_page<R, B, D>(
     B: FnOnce(&mut ratatui::Frame<'_>, Rect, Option<usize>),
     D: FnOnce(&mut ratatui::Frame<'_>, Rect, &R),
 {
+    let PageContext {
+        rows,
+        noun,
+        focused_index,
+        search,
+    } = page;
+
     let [body_area, spacer1, header_area, spacer2, detail_area, _] = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -378,10 +393,12 @@ pub fn render_providers(
     render_list_page(
         frame,
         area,
-        &snapshot.providers,
-        "provider",
-        focused_index,
-        search,
+        PageContext {
+            rows: &snapshot.providers,
+            noun: "provider",
+            focused_index,
+            search,
+        },
         theme,
         |frame, body, focus| {
             let focused_id = focus
@@ -540,10 +557,12 @@ pub fn render_sessions(
     render_list_page(
         frame,
         area,
-        rows,
-        "session",
-        focused_index,
-        search,
+        PageContext {
+            rows,
+            noun: "session",
+            focused_index,
+            search,
+        },
         theme,
         |frame, body, focus| render_session_table(frame, body, rows, focus, theme),
         |frame, area, row| render_session_detail(frame, area, row, theme),
