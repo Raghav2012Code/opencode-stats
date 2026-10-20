@@ -167,8 +167,13 @@ impl App {
         } else {
             TimeRange::All
         };
-        let snapshot =
-            build_snapshot_view(&data, &pricing, initial_range, zero_cost_behavior, view);
+        let snapshot = build_snapshot_view(
+            &data,
+            &pricing,
+            initial_range,
+            zero_cost_behavior,
+            view.clone(),
+        );
         let (sender, receiver) = mpsc::unbounded_channel();
         let (clipboard_sender, clipboard_updates) = mpsc::unbounded_channel();
         if pricing.refresh_needed {
@@ -309,7 +314,7 @@ impl App {
             &self.pricing,
             self.effective_range(),
             self.zero_cost_behavior,
-            self.view,
+            self.view.clone(),
         );
         self.refresh_budget();
     }
@@ -414,6 +419,7 @@ impl App {
                 &self.snapshot,
                 self.focused_index,
                 self.search.as_ref(),
+                self.view.project.as_deref(),
                 theme,
             ),
             Page::Providers => render_providers(
@@ -422,6 +428,7 @@ impl App {
                 &self.snapshot,
                 self.focused_index,
                 self.search.as_ref(),
+                self.view.project.as_deref(),
                 theme,
             ),
             Page::Sessions => render_sessions(
@@ -430,6 +437,7 @@ impl App {
                 &self.snapshot.sessions,
                 self.focused_index,
                 self.search.as_ref(),
+                self.view.project.as_deref(),
                 theme,
             ),
         }
@@ -496,7 +504,7 @@ impl App {
     fn divider_line(&self, width: u16, theme: &Theme) -> ratatui::text::Line<'static> {
         let mut stamp = String::new();
         if let Some(filter) = self.view.label() {
-            stamp.push_str(filter);
+            stamp.push_str(filter.as_str());
             stamp.push_str("  ");
         }
         stamp.push_str(&format!(
@@ -1219,6 +1227,7 @@ mod tests {
             TimeRange::All,
             View {
                 hide_zero_cost: true,
+                project: None,
             },
             None,
             Brand::default(),
@@ -1460,6 +1469,33 @@ mod tests {
             frame.contains("Reloaded usage data from disk") || frame.contains("Reload failed"),
             "the reload reports itself: {frame}"
         );
+    }
+
+    #[test]
+    fn an_unmatched_project_names_itself_in_the_empty_state() {
+        let app = App::new(
+            test_data(vec![test_event()]),
+            test_pricing(),
+            Theme::builtin_dark(),
+            ZeroCostBehavior::KeepZero,
+            no_input_options(),
+            Page::Models,
+            TimeRange::All,
+            View {
+                hide_zero_cost: false,
+                project: Some("absent".to_string()),
+            },
+            None,
+            Brand::default(),
+            None,
+        );
+
+        let frame = frame_text(&app, 100, 24);
+        assert!(
+            frame.contains("No model activity in this time range (absent)."),
+            "{frame}"
+        );
+        assert!(frame.contains("project: absent"), "{frame}");
     }
 
     #[test]

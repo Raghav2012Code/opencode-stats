@@ -70,7 +70,17 @@ pub fn build_snapshot_view(
     if view.hide_zero_cost {
         hide_zero_cost_models(&mut filtered_events, pricing, zero_cost_behavior);
     }
-    let filtered_messages = filter_messages(&data.messages, range, today);
+    let mut filtered_messages = filter_messages(&data.messages, range, today);
+    // Sessions belong to the project of their events, so the project filter keeps
+    // whole sessions: their events and their messages alike.
+    let project_sessions: Option<BTreeSet<String>> = view
+        .project
+        .as_deref()
+        .map(|project| sessions_in_project(&data.events, project));
+    if let Some(allowed) = &project_sessions {
+        filtered_events.retain(|event| allowed.contains(event.session_id.as_str()));
+        filtered_messages.retain(|message| allowed.contains(message.session_id.as_str()));
+    }
     let filtered_model_messages = filtered_messages
         .iter()
         .copied()
@@ -107,7 +117,13 @@ pub fn build_snapshot_view(
     for event in &filtered_events {
         update_price_summary(&mut total_cost, pricing, event, zero_cost_behavior);
     }
-    let session_ids = filter_session_ids(data, &filtered_events, &filtered_messages, range, today);
+    let mut session_ids =
+        filter_session_ids(data, &filtered_events, &filtered_messages, range, today);
+    // The records table knows no projects, so a session it names can still belong to a
+    // project the filter hides: intersect, or the counts would describe other sessions.
+    if let Some(allowed) = &project_sessions {
+        session_ids.retain(|id| allowed.contains(id));
+    }
     // Compaction digests are usage, not conversation: they must not inflate the
     // message count the way a user or assistant turn does.
     let messages = data
@@ -238,6 +254,30 @@ pub fn month_spend(
         }
     }
     spend
+}
+
+/// The sessions whose project matches, resolved the same way session rows resolve it:
+/// the worktree's file name first, then the stored project name, compared without
+/// regard to case. A session with no project on any event never matches.
+fn sessions_in_project(events: &[UsageEvent], project: &str) -> BTreeSet<String> {
+    events
+        .iter()
+        .filter(|event| {
+            session_project(event).is_some_and(|name| name.eq_ignore_ascii_case(project))
+        })
+        .map(|event| event.session_id.clone())
+        .collect()
+}
+
+/// What a session row would call this event's project.
+fn session_project(event: &UsageEvent) -> Option<String> {
+    event
+        .project_path
+        .as_deref()
+        .and_then(std::path::Path::file_name)
+        .and_then(|name| name.to_str())
+        .map(ToOwned::to_owned)
+        .or_else(|| event.project_name.clone())
 }
 
 fn filter_events(events: &[UsageEvent], range: TimeRange, today: NaiveDate) -> Vec<&UsageEvent> {
@@ -387,6 +427,7 @@ mod tests {
             ZeroCostBehavior::KeepZero,
             super::View {
                 hide_zero_cost: true,
+                project: None,
             },
         );
 
@@ -432,6 +473,7 @@ mod tests {
             ZeroCostBehavior::KeepZero,
             super::View {
                 hide_zero_cost: true,
+                project: None,
             },
         );
 
@@ -517,6 +559,94 @@ mod tests {
             );
             assert_eq!(spend.known, Decimal::ONE);
         }
+    }
+
+    fn event_in(project: Option<&str>, path: Option<&str>) -> UsageEvent {
+        let now = Local::now();
+        let mut event = event_with("m", "acme", Some(Decimal::ONE), 10);
+        event.session_id = format!("ses_{}", project.or(path).unwrap_or("none"));
+        event.created_at = Some(now);
+        event.session_started_at = Some(now);
+        event.project_name = project.map(str::to_string);
+        event.project_path = path.map(PathBuf::from);
+        event
+    }
+
+    fn project_data() -> AppData {
+        AppData {
+            events: vec![
+                event_in(Some("Demo"), None),
+                event_in(None, Some("/tmp/demo")),
+                event_in(Some("Other"), None),
+            ],
+            messages: Vec::new(),
+            session_records: Vec::new(),
+            import_stats: ImportStats::default(),
+        }
+    }
+
+    fn project_view(name: &str) -> super::View {
+        super::View {
+            hide_zero_cost: false,
+            project: Some(name.to_string()),
+        }
+    }
+
+    #[test]
+    fn the_project_filter_keeps_only_that_projects_rows() {
+        let data = project_data();
+
+        let filtered = super::build_snapshot_view(
+            &data,
+            &empty_catalog(),
+            TimeRange::All,
+            ZeroCostBehavior::KeepZero,
+            project_view("demo"),
+        );
+
+        // "Demo" by name and "/tmp/demo" by worktree basename, case-insensitively.
+        assert_eq!(filtered.overview.sessions, 2, "both demo sessions");
+        assert_eq!(filtered.overview.total_tokens, 20);
+        assert_eq!(filtered.sessions.len(), 2);
+        assert!(
+            filtered.sessions.iter().all(|row| row.id != "ses_Other"),
+            "the other project is gone"
+        );
+    }
+
+    #[test]
+    fn project_matching_is_case_insensitive_on_both_forms() {
+        let data = project_data();
+
+        for name in ["demo", "DEMO", "Demo", "dEmO"] {
+            let filtered = super::build_snapshot_view(
+                &data,
+                &empty_catalog(),
+                TimeRange::All,
+                ZeroCostBehavior::KeepZero,
+                project_view(name),
+            );
+            assert_eq!(filtered.overview.sessions, 2, "filter {name:?}");
+        }
+    }
+
+    #[test]
+    fn a_project_with_no_activity_leaves_everything_empty() {
+        let data = project_data();
+
+        let filtered = super::build_snapshot_view(
+            &data,
+            &empty_catalog(),
+            TimeRange::All,
+            ZeroCostBehavior::KeepZero,
+            project_view("absent"),
+        );
+
+        assert_eq!(filtered.overview.sessions, 0);
+        assert_eq!(filtered.overview.total_tokens, 0);
+        assert!(filtered.models.is_empty());
+        assert!(filtered.providers.is_empty());
+        assert!(filtered.sessions.is_empty());
     }
 
     #[test]

@@ -104,12 +104,14 @@ impl BudgetSection {
 #[serde(default, deny_unknown_fields)]
 pub struct ViewSection {
     pub hide_zero_cost: bool,
+    pub project: Option<String>,
 }
 
 impl ViewSection {
     pub fn view(&self) -> View {
         View {
             hide_zero_cost: self.hide_zero_cost,
+            project: self.project.clone(),
         }
     }
 }
@@ -341,13 +343,24 @@ db = "/tmp/opencode.db"
     }
 
     #[test]
+    fn the_view_section_parses_the_project() {
+        let parsed: AppConfig = toml::from_str("[view]\nproject = \"demo\"\n").unwrap();
+        assert_eq!(parsed.view.view().project.as_deref(), Some("demo"));
+
+        assert_eq!(AppConfig::default().view.view().project, None);
+    }
+
+    #[test]
     fn the_view_section_is_off_unless_asked() {
         assert!(!AppConfig::default().view.hide_zero_cost);
         assert_eq!(AppConfig::default().view.view().label(), None);
 
         let parsed: AppConfig = toml::from_str("[view]\nhide_zero_cost = true\n").unwrap();
         assert!(parsed.view.hide_zero_cost);
-        assert_eq!(parsed.view.view().label(), Some("hiding zero-cost rows"));
+        assert_eq!(
+            parsed.view.view().label(),
+            Some("hiding zero-cost rows".to_string())
+        );
     }
 
     #[test]

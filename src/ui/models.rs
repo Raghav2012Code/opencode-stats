@@ -163,6 +163,7 @@ pub fn render_models(
     snapshot: &AnalyticsSnapshot,
     focused_index: usize,
     search: Option<&SearchState>,
+    project: Option<&str>,
     theme: &Theme,
 ) {
     render_list_page(
@@ -173,6 +174,7 @@ pub fn render_models(
             noun: "model",
             focused_index,
             search,
+            empty_note: project,
         },
         theme,
         |frame, body, focus| {
@@ -245,6 +247,9 @@ pub(crate) struct PageContext<'a, R> {
     pub(crate) noun: &'a str,
     pub(crate) focused_index: usize,
     pub(crate) search: Option<&'a SearchState>,
+    /// Names the active filter in the empty state, so an empty page never reads as
+    /// missing data. `None` renders the plain empty state, exactly as before.
+    pub(crate) empty_note: Option<&'a str>,
 }
 
 pub(crate) fn render_list_page<R, B, D>(
@@ -264,6 +269,7 @@ pub(crate) fn render_list_page<R, B, D>(
         noun,
         focused_index,
         search,
+        empty_note,
     } = page;
 
     let [body_area, spacer1, header_area, spacer2, detail_area, _] = Layout::default()
@@ -304,9 +310,12 @@ pub(crate) fn render_list_page<R, B, D>(
         draw_detail(frame, detail_area, row);
     } else {
         frame.render_widget(Paragraph::new(""), spacer2);
+        let empty = match empty_note {
+            Some(note) => format!("No {noun} activity in this time range ({note})."),
+            None => format!("No {noun} activity in this time range."),
+        };
         frame.render_widget(
-            Paragraph::new(format!("No {noun} activity in this time range."))
-                .style(theme.muted_style()),
+            Paragraph::new(empty).style(theme.muted_style()),
             detail_area,
         );
     }
@@ -388,6 +397,7 @@ pub fn render_providers(
     snapshot: &AnalyticsSnapshot,
     focused_index: usize,
     search: Option<&SearchState>,
+    project: Option<&str>,
     theme: &Theme,
 ) {
     render_list_page(
@@ -398,6 +408,7 @@ pub fn render_providers(
             noun: "provider",
             focused_index,
             search,
+            empty_note: project,
         },
         theme,
         |frame, body, focus| {
@@ -629,6 +640,7 @@ mod tests {
         providers_page: bool,
         focused: usize,
         search: Option<&super::SearchState>,
+        project: Option<&str>,
     ) -> Vec<String> {
         let theme = Theme::builtin_dark();
         let mut terminal = Terminal::new(TestBackend::new(70, 16)).unwrap();
@@ -636,9 +648,9 @@ mod tests {
             .draw(|frame| {
                 let area = frame.area();
                 if providers_page {
-                    render_providers(frame, area, snapshot, focused, search, &theme);
+                    render_providers(frame, area, snapshot, focused, search, project, &theme);
                 } else {
-                    render_models(frame, area, snapshot, focused, search, &theme);
+                    render_models(frame, area, snapshot, focused, search, project, &theme);
                 }
             })
             .unwrap();
@@ -654,7 +666,7 @@ mod tests {
     }
 
     fn page_text(snapshot: &AnalyticsSnapshot, providers_page: bool) -> String {
-        list_lines(snapshot, providers_page, 0, None).join("")
+        list_lines(snapshot, providers_page, 0, None, None).join("")
     }
 
     #[test]
@@ -684,7 +696,7 @@ mod tests {
         for (providers_page, first, second) in
             [(false, "gpt-5", "claude-4"), (true, "openai", "anthropic")]
         {
-            let first_focused = list_lines(&snapshot, providers_page, 0, None);
+            let first_focused = list_lines(&snapshot, providers_page, 0, None, None);
             let focus = first_focused
                 .iter()
                 .find(|line| line.contains("/2"))
@@ -694,7 +706,7 @@ mod tests {
             assert!(focus.contains("j/k"), "{focus:?}");
             assert!(focus.contains("f find"), "{focus:?}");
 
-            let second_focused = list_lines(&snapshot, providers_page, 1, None);
+            let second_focused = list_lines(&snapshot, providers_page, 1, None, None);
             let focus = second_focused
                 .iter()
                 .find(|line| line.contains("/2"))
@@ -707,7 +719,7 @@ mod tests {
     #[test]
     fn the_detail_pane_reports_the_focused_rows_numbers() {
         let snapshot = snapshot(vec![usage_row("gpt-5", 40)], vec![]);
-        let text = list_lines(&snapshot, false, 0, None).join("\n");
+        let text = list_lines(&snapshot, false, 0, None, None).join("\n");
         for expected in [
             "Total tokens: 40",
             "Input: 20",
@@ -734,7 +746,7 @@ mod tests {
         search.query = "gpt".to_string();
         search.update_filter();
 
-        let text = list_lines(&snapshot, false, 1, Some(&search)).join("\n");
+        let text = list_lines(&snapshot, false, 1, Some(&search), None).join("\n");
 
         assert!(text.contains("gpt_"), "the query with its cursor: {text}");
         assert!(text.contains("1/2"), "filtered over total: {text}");

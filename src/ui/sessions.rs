@@ -16,6 +16,7 @@ pub fn render_sessions(
     rows: &[SessionUsageRow],
     focused_index: usize,
     search: Option<&SearchState>,
+    project: Option<&str>,
     theme: &Theme,
 ) {
     render_list_page(
@@ -26,6 +27,7 @@ pub fn render_sessions(
             noun: "session",
             focused_index,
             search,
+            empty_note: project,
         },
         theme,
         |frame, body, focus| render_session_table(frame, body, rows, focus, theme),
@@ -145,12 +147,12 @@ mod tests {
         }
     }
 
-    fn sessions_text(rows: Vec<SessionUsageRow>) -> String {
+    fn sessions_text(rows: Vec<SessionUsageRow>, project: Option<&str>) -> String {
         let theme = Theme::builtin_dark();
         let mut terminal = Terminal::new(TestBackend::new(70, 16)).unwrap();
         terminal
             .draw(|frame| {
-                render_sessions(frame, frame.area(), &rows, 0, None, &theme);
+                render_sessions(frame, frame.area(), &rows, 0, None, project, &theme);
             })
             .unwrap();
 
@@ -166,12 +168,17 @@ mod tests {
         text
     }
 
-    fn sessions_lines(rows: &[SessionUsageRow], focused: usize, height: u16) -> Vec<String> {
+    fn sessions_lines(
+        rows: &[SessionUsageRow],
+        focused: usize,
+        height: u16,
+        project: Option<&str>,
+    ) -> Vec<String> {
         let theme = Theme::builtin_dark();
         let mut terminal = Terminal::new(TestBackend::new(70, height)).unwrap();
         terminal
             .draw(|frame| {
-                render_sessions(frame, frame.area(), rows, focused, None, &theme);
+                render_sessions(frame, frame.area(), rows, focused, None, project, &theme);
             })
             .unwrap();
 
@@ -193,7 +200,7 @@ mod tests {
 
     #[test]
     fn the_focus_line_names_the_focused_session() {
-        let lines = sessions_lines(&many_session_rows(2), 1, 16);
+        let lines = sessions_lines(&many_session_rows(2), 1, 16, None);
         let focus = lines
             .iter()
             .find(|line| line.contains("/2"))
@@ -207,7 +214,7 @@ mod tests {
 
     #[test]
     fn the_detail_pane_reports_the_focused_sessions_numbers() {
-        let text = sessions_text(vec![session_row_fixture("ses_1", "Alpha", true)]);
+        let text = sessions_text(vec![session_row_fixture("ses_1", "Alpha", true)], None);
         for expected in [
             "Total tokens: 42",
             "Input: 21",
@@ -230,14 +237,14 @@ mod tests {
         let height = 20_u16;
         let table_height = height as usize - 9;
 
-        let lines = sessions_lines(&rows, 0, height);
+        let lines = sessions_lines(&rows, 0, height, None);
         assert!(
             lines.iter().any(|line| line.contains("row-01")),
             "the first row is visible at the top: {lines:#?}"
         );
 
         // Focus below the last visible row: the window has to follow it.
-        let lines = sessions_lines(&rows, 15, height);
+        let lines = sessions_lines(&rows, 15, height, None);
         let position = lines
             .iter()
             .position(|line| line.contains("row-16"))
@@ -258,7 +265,7 @@ mod tests {
         );
 
         // Focus on the last row: the window stops at the end, with no blank rows.
-        let lines = sessions_lines(&rows, 19, height);
+        let lines = sessions_lines(&rows, 19, height, None);
         let position = lines
             .iter()
             .position(|line| line.contains("row-20"))
@@ -281,10 +288,13 @@ mod tests {
 
     #[test]
     fn renders_session_titles_costs_and_the_subagent_marker() {
-        let text = sessions_text(vec![
-            session_row_fixture("ses_big", "Big job", true),
-            session_row_fixture("ses_small", "Small chat", false),
-        ]);
+        let text = sessions_text(
+            vec![
+                session_row_fixture("ses_big", "Big job", true),
+                session_row_fixture("ses_small", "Small chat", false),
+            ],
+            None,
+        );
 
         assert!(text.contains("Big job"));
         assert!(text.contains("Small chat"));
@@ -296,6 +306,12 @@ mod tests {
 
     #[test]
     fn renders_the_sessions_empty_state() {
-        assert!(sessions_text(Vec::new()).contains("No session activity in this time range."));
+        assert!(
+            sessions_text(Vec::new(), None).contains("No session activity in this time range.")
+        );
+        assert!(
+            sessions_text(Vec::new(), Some("demo"))
+                .contains("No session activity in this time range (demo).")
+        );
     }
 }

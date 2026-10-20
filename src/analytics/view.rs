@@ -6,16 +6,23 @@
 
 /// The active view filters. Default is "show everything", which must stay
 /// byte-identical to a build without any filtering at all.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct View {
     /// Leave out model rows whose cost over the window is zero.
     pub hide_zero_cost: bool,
+    /// Show only this project, matched the way session rows resolve it.
+    pub project: Option<String>,
 }
 
 impl View {
     /// The wording for the on-screen notice, or nothing when no filter is on.
-    pub fn label(self) -> Option<&'static str> {
-        self.hide_zero_cost.then_some("hiding zero-cost rows")
+    pub fn label(&self) -> Option<String> {
+        match (&self.project, self.hide_zero_cost) {
+            (Some(project), true) => Some(format!("project: {project} · hiding zero-cost rows")),
+            (Some(project), false) => Some(format!("project: {project}")),
+            (None, true) => Some("hiding zero-cost rows".to_string()),
+            (None, false) => None,
+        }
     }
 }
 
@@ -32,10 +39,25 @@ mod tests {
 
     #[test]
     fn an_active_view_names_what_it_hides() {
-        let view = View {
+        let only_zero = View {
             hide_zero_cost: true,
+            project: None,
         };
+        assert_eq!(only_zero.label(), Some("hiding zero-cost rows".to_string()));
 
-        assert_eq!(view.label(), Some("hiding zero-cost rows"));
+        let only_project = View {
+            hide_zero_cost: false,
+            project: Some("demo".to_string()),
+        };
+        assert_eq!(only_project.label(), Some("project: demo".to_string()));
+
+        let both = View {
+            hide_zero_cost: true,
+            project: Some("demo".to_string()),
+        };
+        assert_eq!(
+            both.label(),
+            Some("project: demo · hiding zero-cost rows".to_string())
+        );
     }
 }
