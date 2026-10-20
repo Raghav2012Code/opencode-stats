@@ -19,7 +19,7 @@ impl Widget for HeatmapWidget<'_> {
         let mut lines = Vec::new();
 
         lines.push(Line::styled(
-            build_month_header(self.data),
+            build_month_header(self.data, area.width as usize),
             self.theme.muted_style(),
         ));
 
@@ -64,19 +64,27 @@ pub fn heatmap_legend_line(theme: &Theme) -> Line<'static> {
     ])
 }
 
-fn build_month_header(data: &HeatmapData) -> String {
-    let mut header = vec![' '; ROW_LABEL_WIDTH + data.weeks.len()];
+fn build_month_header(data: &HeatmapData, max_width: usize) -> String {
+    let width = max_width.min(ROW_LABEL_WIDTH + data.weeks.len());
+    let mut header = vec![' '; width];
     let mut next_free_column = ROW_LABEL_WIDTH;
 
     for (week_index, label) in &data.month_labels {
         let start = ROW_LABEL_WIDTH + *week_index;
-        if start < next_free_column || start >= header.len() {
+        if start < next_free_column || start >= width {
+            continue;
+        }
+
+        // A label that would run past the visible width is dropped whole: a cut-off
+        // "Sep" reading as "S" looks like a missing month, while a missing label is
+        // just a quieter header.
+        if start + label.chars().count() > width {
             continue;
         }
 
         for (offset, ch) in label.chars().enumerate() {
             let column = start + offset;
-            if column >= header.len() {
+            if column >= width {
                 break;
             }
             header[column] = ch;
@@ -177,6 +185,93 @@ mod tests {
         (distinct(grid), distinct(legend))
     }
 
+    fn header_row(data: &HeatmapData, theme: &Theme, width: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, 10)).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(HeatmapWidget { data, theme }, Rect::new(0, 0, width, 10));
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..buffer.area.width)
+            .map(|x| buffer.cell((x, 0)).map(|cell| cell.symbol()).unwrap_or(" "))
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    }
+
+    fn full_year_labels() -> HeatmapData {
+        let weeks = (0..53)
+            .map(|_| {
+                (0..7)
+                    .map(|_| HeatmapCell {
+                        intensity: 1,
+                        is_future: false,
+                    })
+                    .collect()
+            })
+            .collect();
+        // The real layout for a year ending 20 Oct 2026: twelve labels, unevenly spaced.
+        let months = [
+            (2, "Nov"),
+            (6, "Dec"),
+            (11, "Jan"),
+            (15, "Feb"),
+            (19, "Mar"),
+            (24, "Apr"),
+            (28, "May"),
+            (32, "Jun"),
+            (37, "Jul"),
+            (41, "Aug"),
+            (46, "Sep"),
+            (50, "Oct"),
+        ];
+        HeatmapData {
+            weeks,
+            month_labels: months
+                .into_iter()
+                .map(|(week, label)| (week, label.to_string()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn the_month_header_shows_every_label_whole_at_full_width() {
+        let theme = Theme::builtin_dark();
+        let row = header_row(&full_year_labels(), &theme, 70);
+
+        for label in [
+            "Nov", "Dec", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct",
+        ] {
+            assert!(row.contains(label), "missing {label} in {row:?}");
+        }
+    }
+
+    #[test]
+    fn a_narrow_header_drops_labels_whole_instead_of_cutting_them() {
+        let theme = Theme::builtin_dark();
+        let data = full_year_labels();
+        let row = header_row(&data, &theme, 50);
+
+        assert!(row.contains("Aug"), "{row:?}");
+        assert!(
+            !row.contains('S') || row.contains("Sep"),
+            "no cut-off label: {row:?}"
+        );
+        for label in [
+            "Nov", "Dec", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct",
+        ] {
+            let count = row.matches(label).count();
+            assert!(count <= 1, "{label} appears cut or doubled: {row:?}");
+            if count == 1 {
+                let at = row.find(label).unwrap();
+                assert!(
+                    at + label.len() <= 50,
+                    "{label} runs past the visible width: {row:?}"
+                );
+            }
+        }
+    }
     #[test]
     fn every_heat_level_renders_a_distinct_colour() {
         for theme in [Theme::builtin_dark(), Theme::builtin_light()] {

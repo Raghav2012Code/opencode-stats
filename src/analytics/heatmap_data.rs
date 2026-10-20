@@ -51,6 +51,16 @@ pub fn build_heatmap_data(
     let mut month_labels = Vec::new();
     let mut week_index = 0usize;
     while date <= grid_end {
+        // The label sits over the first week that starts inside the new month: a week
+        // beginning on the 1st-7th runs out by the 13th at the latest, so all seven days
+        // belong to the label's month. Labelling the week of the 1st instead would plant
+        // the label over the previous month whenever a month opens on a Friday, Saturday
+        // or Sunday (Nov 2025 and Feb, Mar, May and Aug 2026 all do). Consecutive labels
+        // are Mondays 28 or 35 days apart, so they stay exactly four or five columns
+        // apart and can never collide.
+        if date.weekday() == Weekday::Mon && date.day() <= 7 {
+            month_labels.push((week_index, date.format("%b").to_string()));
+        }
         let mut week = Vec::new();
         for _ in 0..7 {
             let tokens = totals.get(&date).copied().unwrap_or_default();
@@ -59,16 +69,6 @@ pub fn build_heatmap_data(
                 intensity,
                 is_future: date > end,
             });
-            if date.day() == 1 {
-                let label = date.format("%b").to_string();
-                if month_labels
-                    .last()
-                    .map(|(_, current)| current != &label)
-                    .unwrap_or(true)
-                {
-                    month_labels.push((week_index, label));
-                }
-            }
             date += Duration::days(1);
         }
         weeks.push(week);
@@ -137,7 +137,7 @@ mod tests {
     use super::{build_heatmap_data, intensity_thresholds, map_intensity};
     use crate::db::models::{TokenUsage, UsageEvent};
     use crate::utils::time::TimeRange;
-    use chrono::{Local, NaiveDate};
+    use chrono::{Datelike, Duration, Local, NaiveDate};
 
     fn today() -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 10, 17).unwrap()
@@ -197,6 +197,70 @@ mod tests {
             counts[map_intensity(*tokens, &edges) as usize] += 1;
         }
         counts
+    }
+
+    #[test]
+    fn month_labels_sit_over_weeks_entirely_in_that_month() {
+        // The 1sts of Nov 2025 and Feb, Mar, May and Aug 2026 fall on Fri/Sat/Sun, so
+        // labelling the week of the 1st would plant five labels over columns dominated
+        // by the previous month. Each label must sit over a week holding all seven of
+        // its days in the named month.
+        let today = NaiveDate::from_ymd_opt(2026, 10, 20).unwrap();
+        let data = build_heatmap_data(&[], TimeRange::All, today);
+
+        assert!(!data.month_labels.is_empty());
+        let mut previous = 0usize;
+        let mut first = true;
+        for (week, _) in &data.month_labels {
+            assert!(*week < data.weeks.len());
+            if !first {
+                let gap = *week - previous;
+                assert!(
+                    gap == 4 || gap == 5,
+                    "labels stay four or five columns apart, got {week} after {previous}"
+                );
+            }
+            first = false;
+            previous = *week;
+        }
+
+        let grid_start = {
+            let start = today - Duration::days(364);
+            start - Duration::days(start.weekday().num_days_from_monday() as i64)
+        };
+        for (week, label) in &data.month_labels {
+            let monday = grid_start + Duration::days(*week as i64 * 7);
+            let days_in_month = (0..7)
+                .filter(|offset| {
+                    (monday + Duration::days(*offset)).format("%b").to_string() == *label
+                })
+                .count();
+            assert_eq!(
+                days_in_month, 7,
+                "{label} at week {week} is not over its own month"
+            );
+        }
+    }
+
+    #[test]
+    fn month_labels_run_chronologically_without_gaps() {
+        let today = NaiveDate::from_ymd_opt(2026, 10, 20).unwrap();
+        let data = build_heatmap_data(&[], TimeRange::All, today);
+
+        let mut month = (2025, 11);
+        for (_, label) in &data.month_labels {
+            let expected = NaiveDate::from_ymd_opt(month.0, month.1, 1)
+                .unwrap()
+                .format("%b")
+                .to_string();
+            assert_eq!(label, &expected, "labels must run Nov, Dec, Jan, ...");
+            month = if month.1 == 12 {
+                (month.0 + 1, 1)
+            } else {
+                (month.0, month.1 + 1)
+            };
+        }
+        assert_eq!(data.month_labels.len(), 12);
     }
 
     #[test]
