@@ -5,7 +5,7 @@ pub mod view;
 
 use std::collections::BTreeSet;
 
-use chrono::{Datelike, NaiveDate};
+use chrono::NaiveDate;
 
 use rust_decimal::Decimal;
 
@@ -19,7 +19,7 @@ use crate::analytics::view::View;
 use crate::cache::models_cache::PricingCatalog;
 use crate::db::models::{AppData, MessageRecord, UsageEvent};
 use crate::utils::pricing::{PriceSummary, ZeroCostBehavior, update_price_summary};
-use crate::utils::time::{TimeRange, current_local_date};
+use crate::utils::time::{TimeRange, current_local_date, in_range};
 
 #[derive(Clone, Debug)]
 pub struct OverviewStats {
@@ -260,10 +260,14 @@ impl BudgetState {
     }
 }
 
-/// The cost of the events in the same calendar month as `today`, using the same rule
-/// the overview uses for every row. The range selector plays no part: a budget answers
-/// what has been spent this month, whatever window the pages are showing.
-pub fn month_spend(
+/// The window the budget is measured over: the same one the `30d` range shows, so the
+/// budget and the list pages agree about what the last month means.
+pub const BUDGET_WINDOW: TimeRange = TimeRange::Last30Days;
+
+/// The cost of the events inside the budget window, using the same rule the overview
+/// uses for every row. The range selector plays no part: a budget answers what the last
+/// 30 days cost, whatever window the pages are showing.
+pub fn budget_spend(
     events: &[UsageEvent],
     pricing: &PricingCatalog,
     zero_cost_behavior: ZeroCostBehavior,
@@ -271,10 +275,10 @@ pub fn month_spend(
 ) -> PriceSummary {
     let mut spend = PriceSummary::default();
     for event in events {
-        let in_month = event
+        let in_window = event
             .activity_date()
-            .is_some_and(|date| date.year() == today.year() && date.month() == today.month());
-        if in_month {
+            .is_some_and(|date| in_range(date, BUDGET_WINDOW, today));
+        if in_window {
             update_price_summary(&mut spend, pricing, event, zero_cost_behavior);
         }
     }
@@ -514,37 +518,54 @@ mod tests {
     }
 
     #[test]
-    fn month_spend_counts_only_the_current_calendar_month() {
+    fn budget_spend_counts_the_last_thirty_days() {
+        // A rolling window, not a calendar month: the last 30 days, which is the same
+        // window the `30d` range shows.
         let today = current_local_date();
         let now = Local::now();
-        let mut this_month = event_with("this-month", "acme", Some(Decimal::new(3, 0)), 100);
-        this_month.created_at = Some(now);
-        this_month.session_started_at = Some(now);
+        let mut inside = event_with("inside", "acme", Some(Decimal::new(3, 0)), 100);
+        inside.created_at = Some(now);
+        inside.session_started_at = Some(now);
 
-        let mut last_month = event_with("last-month", "acme", Some(Decimal::new(7, 0)), 200);
+        let mut edge = event_with("edge", "acme", Some(Decimal::new(5, 0)), 100);
+        let twenty_nine_days_ago = today - chrono::Duration::days(29);
+        let stamp = twenty_nine_days_ago
+            .and_hms_opt(9, 0, 0)
+            .unwrap()
+            .and_local_timezone(Local)
+            .unwrap();
+        edge.created_at = Some(stamp);
+        edge.session_started_at = Some(stamp);
+
+        let mut outside = event_with("outside", "acme", Some(Decimal::new(7, 0)), 200);
         let forty_days_ago = today - chrono::Duration::days(40);
         let stamp = forty_days_ago
             .and_hms_opt(9, 0, 0)
             .unwrap()
             .and_local_timezone(Local)
             .unwrap();
-        last_month.created_at = Some(stamp);
-        last_month.session_started_at = Some(stamp);
+        outside.created_at = Some(stamp);
+        outside.session_started_at = Some(stamp);
 
-        let spend = super::month_spend(
-            &[this_month, last_month],
+        let spend = super::budget_spend(
+            &[inside, edge, outside],
             &empty_catalog(),
             ZeroCostBehavior::KeepZero,
             today,
         );
 
-        assert_eq!(spend.known, Decimal::new(3, 0));
+        assert_eq!(
+            spend.known,
+            Decimal::new(8, 0),
+            "today and 29 days ago count, 40 days ago does not"
+        );
         assert!(spend.has_known);
     }
 
     #[test]
-    fn month_spend_ignores_the_range_by_construction() {
-        // The function takes no range: whatever the pages show, the budget answers the month.
+    fn budget_spend_ignores_the_range_by_construction() {
+        // The function takes no range: whatever the pages show, the budget answers the
+        // last 30 days.
         let today = current_local_date();
         let mut event = event_with("m", "acme", Some(Decimal::ONE), 10);
         let now = Local::now();
@@ -553,7 +574,7 @@ mod tests {
 
         for range in [TimeRange::All, TimeRange::Today, TimeRange::Last7Days] {
             let _ = range;
-            let spend = super::month_spend(
+            let spend = super::budget_spend(
                 std::slice::from_ref(&event),
                 &empty_catalog(),
                 ZeroCostBehavior::KeepZero,

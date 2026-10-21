@@ -144,13 +144,15 @@ pub fn render_overview(
     }
 }
 
-/// One line: what the month cost so far, the cap, and what is left. The over state is
-/// the only one that raises its voice, in the accent style.
+/// One line: what the budget window cost, the cap, and what is left. The over state is
+/// the only one that raises its voice, in the accent style. The window is named, so the
+/// figure is never read as the all-time total shown further down.
 fn budget_line(budget: &BudgetState, theme: &Theme) -> Line<'static> {
     let spent = format_usd_precise(budget.spend.known);
     let cap = format_usd_precise(budget.cap);
+    let window = crate::analytics::BUDGET_WINDOW.label().to_lowercase();
     let mut spans = vec![
-        Span::styled("Budget: ", theme.muted_style()),
+        Span::styled(format!("Budget ({window}): "), theme.muted_style()),
         Span::styled(format!("{spent} of {cap}"), theme.muted_style()),
     ];
 
@@ -206,15 +208,15 @@ mod tests {
     fn states_have_the_intended_words() {
         assert_eq!(
             text(&state("3", "10")),
-            "Budget: $3.00 of $10.00 · $7.00 left"
+            "Budget (last 30 days): $3.00 of $10.00 · $7.00 left"
         );
         assert_eq!(
             text(&state("10", "10")),
-            "Budget: $10.00 of $10.00 · at cap"
+            "Budget (last 30 days): $10.00 of $10.00 · at cap"
         );
         assert_eq!(
             text(&state("12", "10")),
-            "Budget: $12.00 of $10.00 · OVER by $2.00"
+            "Budget (last 30 days): $12.00 of $10.00 · OVER by $2.00"
         );
     }
 

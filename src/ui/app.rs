@@ -329,13 +329,13 @@ impl App {
         self.refresh_budget();
     }
 
-    /// What the month has cost so far against the configured cap. Recomputed with the
+    /// What the last 30 days cost, against the configured cap. Recomputed with the
     /// snapshot because both answer the same data, and the budget ignores the range the
     /// pages are showing.
     fn refresh_budget(&mut self) {
         self.budget = self.budget_cap.map(|cap| BudgetState {
             cap,
-            spend: crate::analytics::month_spend(
+            spend: crate::analytics::budget_spend(
                 &self.data.events,
                 &self.pricing,
                 self.zero_cost_behavior,
@@ -1316,7 +1316,7 @@ mod tests {
         );
         let frame = frame_text(&under, 100, 24);
         assert!(
-            frame.contains("Budget: $3.00 of $10.00 · $7.00 left"),
+            frame.contains("Budget (last 30 days): $3.00 of $10.00 · $7.00 left"),
             "under: {frame}"
         );
 
@@ -1334,7 +1334,7 @@ mod tests {
             None,
         );
         assert!(
-            frame_text(&exact, 100, 24).contains("Budget: $3.00 of $3.00 · at cap"),
+            frame_text(&exact, 100, 24).contains("Budget (last 30 days): $3.00 of $3.00 · at cap"),
             "exactly at"
         );
 
@@ -1353,7 +1353,8 @@ mod tests {
         );
         let frame = frame_text(&over, 100, 24);
         assert!(
-            frame.contains("Budget: $3.00 of $2.00") && frame.contains("OVER by $1.00"),
+            frame.contains("Budget (last 30 days): $3.00 of $2.00")
+                && frame.contains("OVER by $1.00"),
             "over, visually distinct: {frame}"
         );
     }
@@ -1383,7 +1384,7 @@ mod tests {
             );
             let budget = frame_text(&app, 100, 24)
                 .lines()
-                .find(|line| line.contains("Budget:"))
+                .find(|line| line.contains("Budget"))
                 .unwrap_or_default()
                 .to_string();
             lines.push(budget);
@@ -1402,7 +1403,7 @@ mod tests {
         let frame = frame_text(&app, 100, 24);
 
         assert!(
-            !frame.contains("Budget:"),
+            !frame.contains("Budget"),
             "byte-identical behaviour: {frame}"
         );
     }

@@ -88,17 +88,19 @@ snapshot. While a filter is active, the rule above the content says so.
 
 ## `[budget]`
 
-A monthly spending cap in US dollars.
+A spending cap in US dollars, measured over the last 30 days.
 
 ```toml
 [budget]
 monthly = 50
 ```
 
-When set, the Overview shows what the month cost so far, the cap, and what is
-left; the over state reads `OVER by $X`. The month is always the calendar
-month, so changing the range selector changes what is listed but never whether
-you are over. A negative cap fails at startup. Absent means no budget line.
+When set, the Overview shows what the last 30 days cost, the cap, and what is
+left; the over state reads `OVER by $X`. The window is the one the `30d` range
+shows, and it rolls: it is the last 30 days, not the calendar month, so the cap
+measures your recent burn. Changing the range selector changes what is listed
+but never whether you are over. A negative cap fails at startup. Absent means
+no budget line.
 
 ## `[brand]`
 

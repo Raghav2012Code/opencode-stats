@@ -45,14 +45,14 @@ This repository is **my personal fork** of [Cateds/opencode-stats](https://githu
 - A `Sessions` page ranked by cost, beside `Models` and `Providers`.
 - Live reload of the database without restarting.
 - `Overview` is the whole picture: always all time and without a range selector. The range applies to `Models`, `Providers` and `Sessions`, and is remembered while you move between pages.
-- A monthly budget on the `Overview`: what the calendar month cost, the cap, and what is left.
+- A spending cap on the `Overview`: what the last 30 days cost, the cap, and what is left.
 - Activity streaks: the current run of days and the longest one, on the `Overview` and on every session.
 - The sessions list scrolls with the focus and stays inside its own area.
 - Copy the current view as a share card with `Ctrl+S` or `s`: the image goes to the clipboard, the card is also written as a PNG beside your exports, transient clipboard failures are retried, and the footer names exactly what landed.
 
 **Configuration**
 
-- A `config.toml` with optional sections: `[app]` (`page`, `range`, `db`, `reload_every`), `[view]` (`project`, `pinned_models`, `pinned_providers`), `[budget]` (a monthly cap), `[brand]` (your own strings) and `[theme]`. Every key is optional, and an invalid value fails at startup naming the key and the accepted values.
+- A `config.toml` with optional sections: `[app]` (`page`, `range`, `db`, `reload_every`), `[view]` (`project`, `pinned_models`, `pinned_providers`), `[budget]` (a spending cap), `[brand]` (your own strings) and `[theme]`. Every key is optional, and an invalid value fails at startup naming the key and the accepted values.
 - Database precedence is `--db`, then `[app] db`, then `OC_STATS_DB_PATH`, then discovery.
 - The full reference — every section, its values and defaults — is in [`docs/config.md`](docs/config.md).
 

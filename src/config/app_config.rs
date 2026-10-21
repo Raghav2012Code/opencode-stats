@@ -67,7 +67,8 @@ impl BrandSection {
     }
 }
 
-/// A monthly spending cap in US dollars. Absent means no budget line.
+/// A spending cap in US dollars, measured over the last 30 days. Absent means no
+/// budget line.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct BudgetSection {

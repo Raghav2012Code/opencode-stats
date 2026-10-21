@@ -31,6 +31,7 @@ Data flow: `db::queries::load_app_data` → `analytics::build_snapshot` → `ui:
 - Themes: same directory, `themes/*.toml` (name from the file name; overrides a built-in of the same name)
 - `[app]` section: `page`, `range`, `db` (all optional; absent means Overview, all time, discovered database)
 - `[view]` section: `project`, `pinned_models`, `pinned_providers` (all optional; no filter unless asked for)
+- `[budget]` section: `monthly` (a spending cap in USD, measured over the last 30 days)
 - Full reference: `docs/config.md`
 
 ## Agent skills
