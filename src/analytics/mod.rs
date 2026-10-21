@@ -71,9 +71,6 @@ pub fn build_snapshot_view(
 ) -> AnalyticsSnapshot {
     let today = current_local_date();
     let mut filtered_events = filter_events(&data.events, range, today);
-    if view.hide_zero_cost {
-        hide_zero_cost_models(&mut filtered_events, pricing, zero_cost_behavior);
-    }
     let mut filtered_messages = filter_messages(&data.messages, range, today);
     // Sessions belong to the project of their events, so the project filter keeps
     // whole sessions: their events and their messages alike.
@@ -244,35 +241,6 @@ fn saturating_sum(values: impl IntoIterator<Item = u64>) -> u64 {
     values
         .into_iter()
         .fold(0u64, |total, value| total.saturating_add(value))
-}
-
-/// Drops the events of every model whose cost over the window is zero.
-///
-/// A model is one row on the Models page, so hiding it hides the row and everything the
-/// row contributed - tokens, cost, sessions, days - which is what "totals follow the
-/// visible rows" means. A model with no price at all is left alone: unknown is not zero.
-fn hide_zero_cost_models(
-    events: &mut Vec<&UsageEvent>,
-    pricing: &PricingCatalog,
-    zero_cost_behavior: ZeroCostBehavior,
-) {
-    let mut cost_by_model = std::collections::BTreeMap::new();
-    for event in events.iter() {
-        update_price_summary(
-            cost_by_model.entry(event.model_id.as_str()).or_default(),
-            pricing,
-            event,
-            zero_cost_behavior,
-        );
-    }
-
-    let hidden: BTreeSet<&str> = cost_by_model
-        .into_iter()
-        .filter(|(_, summary)| summary.has_known && summary.known.is_zero())
-        .map(|(model, _)| model)
-        .collect();
-
-    events.retain(|event| !hidden.contains(event.model_id.as_str()));
 }
 
 /// What the user has spent in the budget's month, and what the cap is.
@@ -467,57 +435,36 @@ mod tests {
     }
 
     #[test]
-    fn hiding_zero_cost_models_removes_the_rows_and_their_totals() {
+    fn a_free_model_is_a_row_and_its_tokens_count() {
+        // A model that cost nothing is still usage: it stays a row, and its tokens,
+        // sessions and days count towards the totals. Nothing filters it out.
         let data = two_models_and_an_unpriced_one();
         let catalog = empty_catalog();
 
-        let everything =
+        let snapshot =
             super::build_snapshot(&data, &catalog, TimeRange::All, ZeroCostBehavior::KeepZero);
-        assert_eq!(everything.models.len(), 3);
-        assert_eq!(everything.overview.total_tokens, 1_000_150);
-        assert_eq!(everything.overview.models_used, 3);
 
-        let filtered = super::build_snapshot_view(
-            &data,
-            &catalog,
-            TimeRange::All,
-            ZeroCostBehavior::KeepZero,
-            super::View {
-                hide_zero_cost: true,
-                project: None,
-                pinned_models: Vec::new(),
-                pinned_providers: Vec::new(),
-            },
-        );
-
-        let models: Vec<&str> = filtered.models.iter().map(|row| row.id.as_str()).collect();
+        let models: Vec<&str> = snapshot.models.iter().map(|row| row.id.as_str()).collect();
         assert_eq!(
             models,
-            vec!["paid-model", "unpriced-model"],
-            "the free model is gone"
+            vec!["free-model", "paid-model", "unpriced-model"],
+            "the free model is a row like any other"
         );
-        assert_eq!(
-            filtered.overview.total_tokens, 150,
-            "totals describe the visible rows"
-        );
-        assert_eq!(filtered.overview.models_used, 2);
-        assert_eq!(filtered.overview.sessions, 2);
+        assert_eq!(snapshot.overview.total_tokens, 1_000_150);
+        assert_eq!(snapshot.overview.models_used, 3);
+        assert_eq!(snapshot.overview.sessions, 3);
+        assert_eq!(snapshot.overview.total_cost.known, Decimal::new(2, 0));
         assert!(
-            filtered
+            snapshot
                 .providers
                 .iter()
-                .all(|row| row.id != "free-provider"),
-            "the provider that only served the free model goes too"
-        );
-        let total_percentage: f64 = filtered.models.iter().map(|row| row.percentage).sum();
-        assert!(
-            (total_percentage - 100.0).abs() < 0.01,
-            "percentages describe the visible rows, summing to {total_percentage}"
+                .any(|row| row.id == "free-provider"),
+            "the provider that served the free model is there too"
         );
     }
 
     #[test]
-    fn a_model_with_no_price_is_not_treated_as_free() {
+    fn a_model_with_no_price_is_kept_and_marked_as_missing() {
         let data = AppData {
             events: vec![event_with("unpriced-model", "acme", None, 10)],
             messages: Vec::new(),
@@ -525,25 +472,19 @@ mod tests {
             import_stats: ImportStats::default(),
         };
 
-        let filtered = super::build_snapshot_view(
+        let snapshot = super::build_snapshot(
             &data,
             &empty_catalog(),
             TimeRange::All,
             ZeroCostBehavior::KeepZero,
-            super::View {
-                hide_zero_cost: true,
-                project: None,
-                pinned_models: Vec::new(),
-                pinned_providers: Vec::new(),
-            },
         );
 
         assert_eq!(
-            filtered.models.len(),
+            snapshot.models.len(),
             1,
             "unknown is not zero: the row is kept and marked as missing"
         );
-        assert!(filtered.overview.total_cost.missing);
+        assert!(snapshot.overview.total_cost.missing);
     }
 
     #[test]
@@ -648,7 +589,6 @@ mod tests {
 
     fn project_view(name: &str) -> super::View {
         super::View {
-            hide_zero_cost: false,
             project: Some(name.to_string()),
             pinned_models: Vec::new(),
             pinned_providers: Vec::new(),
@@ -714,7 +654,6 @@ mod tests {
 
     fn pinned_view(models: &[&str], providers: &[&str]) -> super::View {
         super::View {
-            hide_zero_cost: false,
             project: None,
             pinned_models: models.iter().map(|name| name.to_string()).collect(),
             pinned_providers: providers.iter().map(|name| name.to_string()).collect(),

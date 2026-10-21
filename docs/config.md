@@ -61,7 +61,6 @@ absent section produces exactly the unfiltered output.
 
 ```toml
 [view]
-hide_zero_cost = true
 project = "volt-ledger"
 pinned_models = ["space-bunny-free"]
 pinned_providers = ["ollama"]
@@ -69,14 +68,16 @@ pinned_providers = ["ollama"]
 
 Fields:
 
-- `hide_zero_cost`: leave out model rows whose cost over the window is zero. A
-  model with no price at all is kept and marked as missing: unknown is not zero.
 - `project`: show only this project's sessions, matched the way the Sessions
   page names them — the worktree's file name first, then the stored project
   name, without regard to case. A project with no activity renders the empty
   state naming it.
 - `pinned_models`, `pinned_providers`: these rows come first, in the given
   order; everything else keeps its order. Names that match nothing are ignored.
+
+Free models are never filtered out: a model that cost nothing is still a row on
+the `Models` page, and its tokens count towards every total. A model with no
+price at all is kept and marked as missing — unknown is not zero.
 
 Totals, percentages and row counts always describe the rows that remain, on
 every surface: the TUI, `stats` and the export all build from the same

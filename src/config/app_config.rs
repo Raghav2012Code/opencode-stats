@@ -103,7 +103,6 @@ impl BudgetSection {
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct ViewSection {
-    pub hide_zero_cost: bool,
     pub project: Option<String>,
     pub pinned_models: Vec<String>,
     pub pinned_providers: Vec<String>,
@@ -112,7 +111,6 @@ pub struct ViewSection {
 impl ViewSection {
     pub fn view(&self) -> View {
         View {
-            hide_zero_cost: self.hide_zero_cost,
             project: self.project.clone(),
             pinned_models: self.pinned_models.clone(),
             pinned_providers: self.pinned_providers.clone(),
@@ -375,22 +373,24 @@ db = "/tmp/opencode.db"
     }
 
     #[test]
-    fn the_view_section_is_off_unless_asked() {
-        assert!(!AppConfig::default().view.hide_zero_cost);
+    fn the_view_section_filters_nothing_unless_asked() {
         assert_eq!(AppConfig::default().view.view().label(), None);
 
-        let parsed: AppConfig = toml::from_str("[view]\nhide_zero_cost = true\n").unwrap();
-        assert!(parsed.view.hide_zero_cost);
+        let parsed: AppConfig = toml::from_str("[view]\nproject = \"demo\"\n").unwrap();
         assert_eq!(
             parsed.view.view().label(),
-            Some("hiding zero-cost rows".to_string())
+            Some("project: demo".to_string())
         );
     }
 
     #[test]
     fn rejects_unknown_fields_in_the_view_section() {
-        let err = toml::from_str::<AppConfig>("[view]\nhide_free_models = true\n").unwrap_err();
-        assert!(format!("{err:#}").contains("unknown field"));
+        // `hide_zero_cost` is one of them: free models are never filtered out, so the
+        // key that used to hide them is gone.
+        for key in ["hide_free_models", "hide_zero_cost"] {
+            let err = toml::from_str::<AppConfig>(&format!("[view]\n{key} = true\n")).unwrap_err();
+            assert!(format!("{err:#}").contains("unknown field"));
+        }
     }
 
     #[test]

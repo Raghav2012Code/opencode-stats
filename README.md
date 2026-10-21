@@ -29,6 +29,7 @@ This repository is **my personal fork** of [Cateds/opencode-stats](https://githu
 
 - Reads OpenCode's current `session_v2` and `session_message` tables, de-duplicates rows that also exist in the legacy `message` table, and counts `compaction` calls as billed usage. Upstream read the legacy tables alone, which on a migrated database hid most sessions and most of the cost.
 - Cost comes from what OpenCode stored for each row, so totals reconcile exactly against the database.
+- Free models are included, never filtered out: a model that cost nothing is still a row, and its tokens count towards every total.
 
 **A heatmap that reads**
 
@@ -293,6 +294,8 @@ If local overrides exist in your OpenCode configuration, they take precedence.
 When complete pricing information is unavailable, the program falls back to estimated cache read/write costs. If the database already contains actual costs, those values are prioritized.
 
 If the database stores `cost: 0` for a nonzero-token response, `oc-stats` keeps that stored zero by default. Pass `--ignore-zero` to estimate the cost instead.
+
+Free models are always included: they appear as rows with a `$0.00` cost, and their tokens count towards the totals.
 
 ## Use cases
 

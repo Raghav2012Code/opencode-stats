@@ -1267,8 +1267,7 @@ mod tests {
             Page::Overview,
             TimeRange::All,
             View {
-                hide_zero_cost: true,
-                project: None,
+                project: Some("demo".to_string()),
                 pinned_models: Vec::new(),
                 pinned_providers: Vec::new(),
             },
@@ -1282,7 +1281,7 @@ mod tests {
             .next()
             .unwrap_or_default()
             .to_string();
-        assert!(rule.contains("hiding zero-cost rows"), "{rule:?}");
+        assert!(rule.contains("project: demo"), "{rule:?}");
         assert!(rule.contains("Loaded "), "{rule:?}");
 
         let plain = test_app(data, no_input_options());
@@ -1291,10 +1290,7 @@ mod tests {
             .next()
             .unwrap_or_default()
             .to_string();
-        assert!(
-            !rule.contains("hiding zero-cost rows"),
-            "no filter, no notice: {rule:?}"
-        );
+        assert!(!rule.contains("project:"), "no filter, no notice: {rule:?}");
     }
 
     #[test]
@@ -1525,7 +1521,6 @@ mod tests {
             Page::Models,
             TimeRange::All,
             View {
-                hide_zero_cost: false,
                 project: Some("absent".to_string()),
                 pinned_models: Vec::new(),
                 pinned_providers: Vec::new(),

@@ -9,7 +9,8 @@ Data flow: `db::queries::load_app_data` → `analytics::build_snapshot` → `ui:
 ## Key Rules
 
 - Usage counts `assistant` and `compaction` messages (both are billed model calls); `user` messages count as prompts only
-- Default database paths: `%APPDATA%/opencode/opencode.db` (Windows), `~/.local/share/opencode/opencode.db` (Linux), `~/Library/Application Support/opencode/opencode.db` (macOS)
+- Free models are never filtered out: a model that cost nothing is still a row, and its tokens count towards every total
+- Default database paths, checked in this order: `~/.local/share/opencode/opencode.db` (every platform), then on Windows `%LOCALAPPDATA%\opencode\opencode.db` and `%APPDATA%\opencode\opencode.db`, on macOS `~/Library/Application Support/opencode/opencode.db`
 
 ### Error Handling
 
@@ -18,17 +19,19 @@ Data flow: `db::queries::load_app_data` → `analytics::build_snapshot` → `ui:
 
 ### Pricing
 
-- Cache: `~/.cache/oc-stats/models.json` (TTL: 1 hour)
+- Cache: `dirs::cache_dir()/oc-stats/models.json` — `%LOCALAPPDATA%\oc-stats\models.json` on Windows, `~/.cache/oc-stats/models.json` on Linux and macOS (TTL: 1 hour)
 - Remote: `https://models.dev/api.json`
 - OpenCode config overrides take priority
 - Fallback: `cacheWrite = input`, `cacheRead = input * 0.1`
 - Prefer stored cost from database when available
 
-### Theme
+### Config
 
 - Config: `<config dir>/oc-stats/config.toml` (`~/.config/oc-stats` on Linux/macOS, `%APPDATA%\oc-stats` on Windows)
 - Themes: same directory, `themes/*.toml` (name from the file name; overrides a built-in of the same name)
 - `[app]` section: `page`, `range`, `db` (all optional; absent means Overview, all time, discovered database)
+- `[view]` section: `project`, `pinned_models`, `pinned_providers` (all optional; no filter unless asked for)
+- Full reference: `docs/config.md`
 
 ## Agent skills
 
