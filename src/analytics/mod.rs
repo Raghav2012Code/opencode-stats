@@ -1,5 +1,6 @@
 pub mod heatmap_data;
 pub mod model_stats;
+pub mod streaks;
 pub mod view;
 
 use std::collections::BTreeSet;
@@ -13,6 +14,7 @@ use crate::analytics::model_stats::{
     ModelChartData, SessionUsageRow, UsageRow, build_model_chart, build_provider_chart,
     build_session_rows,
 };
+use crate::analytics::streaks::streaks;
 use crate::analytics::view::View;
 use crate::cache::models_cache::PricingCatalog;
 use crate::db::models::{AppData, MessageRecord, UsageEvent};
@@ -31,6 +33,8 @@ pub struct OverviewStats {
     pub prompts: usize,
     pub models_used: usize,
     pub active_days: usize,
+    pub current_streak: usize,
+    pub longest_streak: usize,
     pub fun_comparison: String,
 }
 
@@ -147,11 +151,12 @@ pub fn build_snapshot_view(
         .map(|event| event.model_id.clone())
         .collect::<BTreeSet<_>>()
         .len();
-    let active_days = filtered_events
+    let active_day_set = filtered_events
         .iter()
         .filter_map(|event| event.activity_date())
-        .collect::<BTreeSet<_>>()
-        .len();
+        .collect::<BTreeSet<_>>();
+    let active_days = active_day_set.len();
+    let overall_streaks = streaks(&active_day_set, today);
 
     let mut snapshot = AnalyticsSnapshot {
         overview: OverviewStats {
@@ -165,6 +170,8 @@ pub fn build_snapshot_view(
             prompts,
             models_used,
             active_days,
+            current_streak: overall_streaks.current,
+            longest_streak: overall_streaks.longest,
             fun_comparison: crate::utils::formatting::tokens_comparison_text(
                 input_tokens + output_tokens,
             ),
@@ -178,6 +185,7 @@ pub fn build_snapshot_view(
             &filtered_messages,
             pricing,
             zero_cost_behavior,
+            today,
         ),
         heatmap,
     };
@@ -801,6 +809,107 @@ mod tests {
         assert_eq!(providers, vec!["zulu", "alpha"]);
         // The Overview's favourite is the first model row, so it follows the pins.
         assert_eq!(pinned.models[0].id, "ccc");
+    }
+
+    #[test]
+    fn overview_reports_current_and_longest_streaks() {
+        fn event_days_ago(days_ago: i64, session: &str) -> UsageEvent {
+            let when = Local::now() - chrono::Duration::days(days_ago);
+            UsageEvent {
+                session_id: session.to_string(),
+                parent_session_id: None,
+                session_title: None,
+                session_started_at: Some(when),
+                session_archived_at: None,
+                project_name: None,
+                project_path: None,
+                provider_id: Some("acme".to_string()),
+                model_id: "m".to_string(),
+                agent: None,
+                finish_reason: None,
+                tokens: TokenUsage {
+                    input: 10,
+                    output: 0,
+                    cache_read: 0,
+                    cache_write: 0,
+                },
+                created_at: Some(when),
+                completed_at: Some(when),
+                stored_cost_usd: None,
+            }
+        }
+
+        // Current two-day run plus an older five-day run across a gap.
+        let data = AppData {
+            events: vec![
+                event_days_ago(0, "ses_today"),
+                event_days_ago(1, "ses_yesterday"),
+                event_days_ago(30, "ses_old_0"),
+                event_days_ago(31, "ses_old_1"),
+                event_days_ago(32, "ses_old_2"),
+                event_days_ago(33, "ses_old_3"),
+                event_days_ago(34, "ses_old_4"),
+            ],
+            messages: Vec::new(),
+            session_records: Vec::new(),
+            import_stats: ImportStats::default(),
+        };
+
+        let snapshot = build_snapshot(
+            &data,
+            &empty_catalog(),
+            TimeRange::All,
+            ZeroCostBehavior::KeepZero,
+        );
+
+        assert_eq!(snapshot.overview.current_streak, 2);
+        assert_eq!(snapshot.overview.longest_streak, 5);
+    }
+
+    #[test]
+    fn overview_current_streak_counts_from_yesterday_when_today_is_empty() {
+        fn event_days_ago(days_ago: i64) -> UsageEvent {
+            let when = Local::now() - chrono::Duration::days(days_ago);
+            UsageEvent {
+                session_id: format!("ses_{days_ago}"),
+                parent_session_id: None,
+                session_title: None,
+                session_started_at: Some(when),
+                session_archived_at: None,
+                project_name: None,
+                project_path: None,
+                provider_id: Some("acme".to_string()),
+                model_id: "m".to_string(),
+                agent: None,
+                finish_reason: None,
+                tokens: TokenUsage {
+                    input: 10,
+                    output: 0,
+                    cache_read: 0,
+                    cache_write: 0,
+                },
+                created_at: Some(when),
+                completed_at: Some(when),
+                stored_cost_usd: None,
+            }
+        }
+
+        let data = AppData {
+            events: vec![event_days_ago(1), event_days_ago(2)],
+            messages: Vec::new(),
+            session_records: Vec::new(),
+            import_stats: ImportStats::default(),
+        };
+
+        let snapshot = build_snapshot(
+            &data,
+            &empty_catalog(),
+            TimeRange::All,
+            ZeroCostBehavior::KeepZero,
+        );
+
+        assert_eq!(snapshot.overview.current_streak, 2);
+        assert_eq!(snapshot.overview.longest_streak, 2);
     }
 
     #[test]

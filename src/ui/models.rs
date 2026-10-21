@@ -621,6 +621,8 @@ mod tests {
                 prompts: 0,
                 models_used: 0,
                 active_days: 0,
+                current_streak: 0,
+                longest_streak: 0,
                 fun_comparison: String::new(),
             },
             models,

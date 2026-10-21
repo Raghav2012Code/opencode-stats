@@ -112,7 +112,10 @@ fn render_session_detail(
                     .unwrap_or_else(|| "—".to_string()),
             ),
             ("Project: ", row.project.clone()),
-            ("Active days: ", row.active_days.to_string()),
+            (
+                "Active days: ",
+                format!("{} · streak {}", row.active_days, row.longest_streak),
+            ),
         ],
         theme,
     );
@@ -140,6 +143,7 @@ mod tests {
             messages: 3,
             prompts: 2,
             active_days: 1,
+            longest_streak: 1,
             cost: PriceSummary::default(),
             first_activity: None,
             last_activity: None,
@@ -223,7 +227,7 @@ mod tests {
             "Messages: 3",
             "Prompts: 2",
             "Project: demo",
-            "Active days: 1",
+            "Active days: 1 · streak 1",
         ] {
             assert!(text.contains(expected), "missing {expected:?} in {text}");
         }

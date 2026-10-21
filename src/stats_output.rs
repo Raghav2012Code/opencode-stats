@@ -277,6 +277,7 @@ mod tests {
             messages: 4,
             prompts: 1,
             active_days: 1,
+            longest_streak: 1,
             cost: price(rust_decimal::Decimal::new(123, 2)),
             first_activity: None,
             last_activity: None,
@@ -301,6 +302,8 @@ mod tests {
                 prompts: 2,
                 models_used: 1,
                 active_days: 1,
+                current_streak: 1,
+                longest_streak: 1,
                 fun_comparison: String::new(),
             },
             models: vec![row(

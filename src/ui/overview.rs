@@ -25,7 +25,7 @@ pub fn render_overview(
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
-            Constraint::Length(5),
+            Constraint::Length(6),
             Constraint::Length(1),
             Constraint::Length(1),
         ])
@@ -100,6 +100,11 @@ pub fn render_overview(
             snapshot.overview.models_used.to_string(),
             theme,
         ),
+        metric_line(
+            "Active days: ",
+            snapshot.overview.active_days.to_string(),
+            theme,
+        ),
     ]);
     frame.render_widget(Paragraph::new(left_text), left);
 
@@ -113,8 +118,13 @@ pub fn render_overview(
         metric_line("Messages: ", snapshot.overview.messages.to_string(), theme),
         metric_line("Prompts: ", snapshot.overview.prompts.to_string(), theme),
         metric_line(
-            "Active days: ",
-            snapshot.overview.active_days.to_string(),
+            "Current streak: ",
+            snapshot.overview.current_streak.to_string(),
+            theme,
+        ),
+        metric_line(
+            "Longest streak: ",
+            snapshot.overview.longest_streak.to_string(),
             theme,
         ),
     ]);
@@ -214,5 +224,82 @@ mod tests {
         assert!(!state("10", "10").is_over());
         assert!(state("11", "10").is_over());
         assert_eq!(state("4", "10").remainder(), Decimal::new(6, 0));
+    }
+
+    #[test]
+    fn the_overview_shows_both_streaks_next_to_the_active_days() {
+        use crate::analytics::heatmap_data::HeatmapData;
+        use crate::analytics::model_stats::ModelChartData;
+        use crate::analytics::{AnalyticsSnapshot, OverviewStats};
+        use crate::config::app_config::Brand;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let snapshot = AnalyticsSnapshot {
+            overview: OverviewStats {
+                total_tokens: 0,
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_tokens: 0,
+                total_cost: PriceSummary::default(),
+                sessions: 0,
+                messages: 0,
+                prompts: 0,
+                models_used: 0,
+                active_days: 7,
+                current_streak: 2,
+                longest_streak: 5,
+                fun_comparison: String::new(),
+            },
+            models: Vec::new(),
+            chart: ModelChartData {
+                x_bounds: [0.0, 1.0],
+                y_bounds: [0.0, 1.0],
+                x_labels: Vec::new(),
+                y_labels: Vec::new(),
+                series: Vec::new(),
+            },
+            providers: Vec::new(),
+            provider_chart: ModelChartData {
+                x_bounds: [0.0, 1.0],
+                y_bounds: [0.0, 1.0],
+                x_labels: Vec::new(),
+                y_labels: Vec::new(),
+                series: Vec::new(),
+            },
+            sessions: Vec::new(),
+            heatmap: HeatmapData {
+                weeks: Vec::new(),
+                month_labels: Vec::new(),
+            },
+        };
+
+        let theme = Theme::builtin_dark();
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal
+            .draw(|frame| {
+                super::render_overview(
+                    frame,
+                    frame.area(),
+                    &snapshot,
+                    None,
+                    &Brand::default(),
+                    &theme,
+                );
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer().clone();
+        let mut text = String::new();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                if let Some(cell) = buffer.cell((x, y)) {
+                    text.push_str(cell.symbol());
+                }
+            }
+        }
+        for expected in ["Active days: 7", "Current streak: 2", "Longest streak: 5"] {
+            assert!(text.contains(expected), "missing {expected:?} in {text}");
+        }
     }
 }

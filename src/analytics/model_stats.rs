@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{Datelike, NaiveDate};
 
+use crate::analytics::streaks::streaks;
 use crate::cache::models_cache::PricingCatalog;
 use crate::db::models::{MessageRecord, TokenUsage, UsageEvent};
 use crate::utils::formatting::percentage;
@@ -41,6 +42,7 @@ pub struct SessionUsageRow {
     pub messages: usize,
     pub prompts: usize,
     pub active_days: usize,
+    pub longest_streak: usize,
     pub cost: PriceSummary,
     pub first_activity: Option<chrono::DateTime<chrono::Local>>,
     pub last_activity: Option<chrono::DateTime<chrono::Local>>,
@@ -210,6 +212,7 @@ pub fn build_session_rows(
     messages: &[&MessageRecord],
     pricing: &PricingCatalog,
     zero_cost_behavior: ZeroCostBehavior,
+    today: NaiveDate,
 ) -> Vec<SessionUsageRow> {
     #[derive(Default)]
     struct SessionAccumulator {
@@ -290,6 +293,7 @@ pub fn build_session_rows(
                 messages: row.messages,
                 prompts: row.prompts,
                 active_days: row.active_days.len(),
+                longest_streak: streaks(&row.active_days, today).longest,
                 cost: row.cost,
                 first_activity: row.first_activity,
                 last_activity: row.last_activity,
@@ -690,6 +694,7 @@ mod tests {
             &borrowed_messages,
             &empty_pricing(),
             ZeroCostBehavior::KeepZero,
+            NaiveDate::from_ymd_opt(2026, 3, 12).unwrap(),
         );
 
         assert_eq!(rows.len(), 2);
@@ -718,6 +723,7 @@ mod tests {
             &borrowed_messages,
             &empty_pricing(),
             ZeroCostBehavior::KeepZero,
+            NaiveDate::from_ymd_opt(2026, 3, 12).unwrap(),
         );
 
         assert_eq!(rows.len(), 1);
@@ -747,11 +753,48 @@ mod tests {
             &no_messages,
             &empty_pricing(),
             ZeroCostBehavior::KeepZero,
+            NaiveDate::from_ymd_opt(2026, 3, 12).unwrap(),
         );
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].elapsed_secs(), Some(3 * 3_600 + 30 * 60));
         assert!(rows[0].first_activity < rows[0].last_activity);
+    }
+
+    #[test]
+    fn session_rows_carry_the_longest_streak() {
+        let today = NaiveDate::from_ymd_opt(2026, 3, 12).unwrap();
+        let on_day = |session: &str, day: u32| {
+            let when = Local.with_ymd_and_hms(2026, 3, day, 9, 0, 0).single();
+            let mut event = session_event(session, None, None, None, 5, 7);
+            event.created_at = when;
+            event.completed_at = when;
+            event.session_started_at = when;
+            event
+        };
+        let events = [
+            on_day("ses_streaky", 8),
+            on_day("ses_streaky", 9),
+            on_day("ses_streaky", 11),
+            on_day("ses_streaky", 12),
+            on_day("ses_once", 12),
+        ];
+        let borrowed = events.iter().collect::<Vec<_>>();
+        let no_messages: Vec<&MessageRecord> = Vec::new();
+
+        let rows = super::build_session_rows(
+            &borrowed,
+            &no_messages,
+            &empty_pricing(),
+            ZeroCostBehavior::KeepZero,
+            today,
+        );
+
+        let streaky = rows.iter().find(|row| row.id == "ses_streaky").unwrap();
+        assert_eq!(streaky.active_days, 4);
+        assert_eq!(streaky.longest_streak, 2);
+        let once = rows.iter().find(|row| row.id == "ses_once").unwrap();
+        assert_eq!(once.longest_streak, 1);
     }
 
     #[test]
