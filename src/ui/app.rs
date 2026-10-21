@@ -1875,40 +1875,44 @@ mod tests {
     fn write_readme_screenshots() {
         use crate::ui::export::render_share_card;
 
-        let config = crate::config::app_config::AppConfig::load().unwrap();
-        let budget = config.budget.monthly_cap().unwrap();
-        let brand = config.brand.brand().unwrap();
-        let view = config.view.view();
+        // The app refreshes a stale pricing cache in the background, which needs a
+        // runtime to spawn into.
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let config = crate::config::app_config::AppConfig::load().unwrap();
+            let budget = config.budget.monthly_cap().unwrap();
+            let brand = config.brand.brand().unwrap();
+            let view = config.view.view();
 
-        for (page, name, light) in [
-            (Page::Overview, "overview", false),
-            (Page::Models, "models", false),
-            (Page::Providers, "providers", false),
-            (Page::Sessions, "card", true),
-        ] {
-            let data = crate::db::queries::load_app_data(&no_input_options()).unwrap();
-            let pricing = crate::cache::models_cache::PricingCatalog::load().unwrap();
-            let theme = if light {
-                Theme::builtin_light()
-            } else {
-                Theme::builtin_dark()
-            };
-            let app = App::new(
-                data,
-                pricing,
-                theme,
-                ZeroCostBehavior::KeepZero,
-                no_input_options(),
-                page,
-                TimeRange::All,
-                view.clone(),
-                budget,
-                brand.clone(),
-                None,
-            );
-            let buffer = app.capture_current_page_buffer().unwrap();
-            let image = render_share_card(&buffer, &app.theme).unwrap();
-            image.save(format!("images/{name}.png")).unwrap();
-        }
+            for (page, name, light) in [
+                (Page::Overview, "overview", false),
+                (Page::Models, "models", false),
+                (Page::Providers, "providers", false),
+                (Page::Sessions, "card", true),
+            ] {
+                let data = crate::db::queries::load_app_data(&no_input_options()).unwrap();
+                let pricing = crate::cache::models_cache::PricingCatalog::load().unwrap();
+                let theme = if light {
+                    Theme::builtin_light()
+                } else {
+                    Theme::builtin_dark()
+                };
+                let app = App::new(
+                    data,
+                    pricing,
+                    theme,
+                    ZeroCostBehavior::KeepZero,
+                    no_input_options(),
+                    page,
+                    TimeRange::All,
+                    view.clone(),
+                    budget,
+                    brand.clone(),
+                    None,
+                );
+                let buffer = app.capture_current_page_buffer().unwrap();
+                let image = render_share_card(&buffer, &app.theme).unwrap();
+                image.save(format!("images/{name}.png")).unwrap();
+            }
+        });
     }
 }

@@ -96,8 +96,8 @@ Every custom theme must include:
 - `empty`: low-activity heatmap color
 - `active`: active heatmap color
 
-The map has five intensity levels and you configure two of them: `empty` is a day with no
-usage and `active` is the fullest level. The three levels in between are interpolated
+The map has six intensity levels and you configure two of them: `empty` is a day with no
+usage and `active` is the fullest level. The four levels in between are interpolated
 between those endpoints, so a theme never lists them.
 
 ### `[series]`

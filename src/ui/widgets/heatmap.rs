@@ -4,8 +4,12 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 
-use crate::analytics::heatmap_data::{HeatmapData, weekday_labels};
+use crate::analytics::heatmap_data::{HEAT_LEVELS, HeatmapData, weekday_labels};
 use crate::ui::theme::Theme;
+
+/// One glyph per level, from no usage to the busiest day. The ink grows with the level,
+/// so the ramp still reads when the colours are close together.
+const LEVEL_GLYPHS: [char; HEAT_LEVELS] = ['·', '░', '▒', '▓', '▉', '█'];
 
 pub struct HeatmapWidget<'a> {
     pub data: &'a HeatmapData,
@@ -31,13 +35,11 @@ impl Widget for HeatmapWidget<'_> {
                 let (symbol, style) = if cell.is_future {
                     (' ', Style::default())
                 } else {
-                    match cell.intensity {
-                        0 => ('·', Style::default().fg(self.theme.heat_level(0))),
-                        1 => ('░', Style::default().fg(self.theme.heat_level(1))),
-                        2 => ('▒', Style::default().fg(self.theme.heat_level(2))),
-                        3 => ('▓', Style::default().fg(self.theme.heat_level(3))),
-                        _ => ('█', Style::default().fg(self.theme.heat_level(4))),
-                    }
+                    let level = (cell.intensity as usize).min(HEAT_LEVELS - 1);
+                    (
+                        LEVEL_GLYPHS[level],
+                        Style::default().fg(self.theme.heat_level(level as u8)),
+                    )
                 };
                 spans.push(Span::styled(symbol.to_string(), style));
             }
@@ -49,19 +51,19 @@ impl Widget for HeatmapWidget<'_> {
 }
 
 pub fn heatmap_legend_line(theme: &Theme) -> Line<'static> {
-    Line::from(vec![
-        Span::styled("    Less ", theme.muted_style()),
-        Span::styled("·", Style::default().fg(theme.heat_level(0))),
-        Span::raw(" "),
-        Span::styled("░", Style::default().fg(theme.heat_level(1))),
-        Span::raw(" "),
-        Span::styled("▒", Style::default().fg(theme.heat_level(2))),
-        Span::raw(" "),
-        Span::styled("▓", Style::default().fg(theme.heat_level(3))),
-        Span::raw(" "),
-        Span::styled("█", Style::default().fg(theme.heat_level(4))),
-        Span::styled(" More", theme.muted_style()),
-    ])
+    let mut spans = vec![Span::styled("    Less ", theme.muted_style())];
+    for (index, glyph) in LEVEL_GLYPHS.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::raw(" "));
+        }
+        spans.push(Span::styled(
+            glyph.to_string(),
+            Style::default().fg(theme.heat_level(index as u8)),
+        ));
+    }
+    spans.push(Span::styled(" More", theme.muted_style()));
+
+    Line::from(spans)
 }
 
 fn build_month_header(data: &HeatmapData, max_width: usize) -> String {
@@ -109,7 +111,7 @@ fn weekday_label(row_index: usize, weekday: &chrono::Weekday) -> String {
 #[cfg(test)]
 mod tests {
     use super::{HeatmapWidget, ROW_LABEL_WIDTH};
-    use crate::analytics::heatmap_data::{HeatmapCell, HeatmapData};
+    use crate::analytics::heatmap_data::{HEAT_LEVELS, HeatmapCell, HeatmapData};
     use crate::ui::theme::Theme;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -119,7 +121,7 @@ mod tests {
 
     /// One column per level, so every level appears in the rendered grid.
     fn data_with_every_level() -> HeatmapData {
-        let weeks = (0..5u8)
+        let weeks = (0..HEAT_LEVELS as u8)
             .map(|level| {
                 (0..7)
                     .map(|_| HeatmapCell {
@@ -168,7 +170,7 @@ mod tests {
         let mut legend = Vec::new();
 
         for y in 1..8u16 {
-            for x in ROW_LABEL_WIDTH as u16..(ROW_LABEL_WIDTH + 5) as u16 {
+            for x in ROW_LABEL_WIDTH as u16..(ROW_LABEL_WIDTH + HEAT_LEVELS) as u16 {
                 if let Some(cell) = buffer.cell((x, y)) {
                     grid.push(cell.fg);
                 }
@@ -176,7 +178,7 @@ mod tests {
         }
         for x in 0..40u16 {
             if let Some(cell) = buffer.cell((x, 9))
-                && matches!(cell.symbol(), "·" | "░" | "▒" | "▓" | "█")
+                && matches!(cell.symbol(), "·" | "░" | "▒" | "▓" | "▉" | "█")
             {
                 legend.push(cell.fg);
             }
@@ -276,14 +278,14 @@ mod tests {
     fn every_heat_level_renders_a_distinct_colour() {
         for theme in [Theme::builtin_dark(), Theme::builtin_light()] {
             let (grid, _) = rendered_heat_colours(&theme);
-            let expected = (0..=4)
+            let expected = (0..HEAT_LEVELS as u8)
                 .map(|level| theme.heat_level(level))
                 .collect::<Vec<_>>();
 
             assert_eq!(
                 grid.len(),
                 expected.len(),
-                "each of the five levels must have its own colour, got {grid:?}"
+                "each of the levels must have its own colour, got {grid:?}"
             );
             for color in &expected {
                 assert!(
@@ -298,7 +300,7 @@ mod tests {
     fn the_legend_shows_the_same_colours_as_the_cells() {
         for theme in [Theme::builtin_dark(), Theme::builtin_light()] {
             let (grid, legend) = rendered_heat_colours(&theme);
-            let expected = (0..=4)
+            let expected = (0..HEAT_LEVELS as u8)
                 .map(|level| theme.heat_level(level))
                 .collect::<Vec<_>>();
 
@@ -311,6 +313,29 @@ mod tests {
                 assert!(legend.contains(color), "legend is missing {color:?}");
                 assert!(grid.contains(color), "cells are missing {color:?}");
             }
+        }
+    }
+
+    #[test]
+    fn the_ramp_grows_ink_with_every_level() {
+        // The glyphs are the level as well as the colour: each one covers more of the
+        // cell than the one before it, so the ramp reads without colour.
+        let covered: Vec<u32> = super::LEVEL_GLYPHS
+            .iter()
+            .map(|glyph| match glyph {
+                '·' => 0,
+                '░' => 1,
+                '▒' => 2,
+                '▓' => 3,
+                '▉' => 4,
+                '█' => 5,
+                other => panic!("unexpected level glyph {other:?}"),
+            })
+            .collect();
+
+        assert_eq!(covered.len(), HEAT_LEVELS);
+        for pair in covered.windows(2) {
+            assert!(pair[1] > pair[0], "the ramp must keep growing: {covered:?}");
         }
     }
 }

@@ -15,6 +15,9 @@ pub struct HeatmapData {
     pub month_labels: Vec<(usize, String)>,
 }
 
+/// How many levels the heatmap has: no usage, then five shades of activity.
+pub const HEAT_LEVELS: usize = 6;
+
 /// How far back the map reaches when the range is "all time".
 const ALL_TIME_DAYS: i64 = 364;
 
@@ -81,15 +84,15 @@ pub fn build_heatmap_data(
     }
 }
 
-/// The quartiles of the window's active days, by nearest rank. Deriving the bucket edges
-/// from the distribution, rather than from the busiest day, stops one outlier from pushing
-/// every other day into the lowest bucket.
-fn intensity_thresholds(active: impl Iterator<Item = u64>) -> [u64; 3] {
+/// The edges between the levels, as the quintiles of the window's active days by nearest
+/// rank. Deriving the bucket edges from the distribution, rather than from the busiest
+/// day, stops one outlier from pushing every other day into the lowest bucket.
+fn intensity_thresholds(active: impl Iterator<Item = u64>) -> [u64; HEAT_LEVELS - 2] {
     let mut values = active.collect::<Vec<_>>();
     values.sort_unstable();
 
     if values.is_empty() {
-        return [0, 0, 0];
+        return [0; HEAT_LEVELS - 2];
     }
 
     let at = |numerator: usize, denominator: usize| {
@@ -97,27 +100,31 @@ fn intensity_thresholds(active: impl Iterator<Item = u64>) -> [u64; 3] {
         values[rank - 1]
     };
 
-    [at(1, 4), at(1, 2), at(3, 4)]
+    // One edge fewer than the buckets: four edges make five buckets, one per quintile
+    // of the active days.
+    let buckets = HEAT_LEVELS - 1;
+    let mut edges = [0u64; HEAT_LEVELS - 2];
+    for (index, edge) in edges.iter_mut().enumerate() {
+        *edge = at(index + 1, buckets);
+    }
+    edges
 }
 
 /// Level 0 is a day with no usage at all, which is absence rather than low activity, so it
 /// takes no part in the distribution. A token count equal to a threshold takes the lower
 /// bucket, so two days with the same total never get different shades.
-fn map_intensity(tokens: u64, thresholds: &[u64; 3]) -> u8 {
+fn map_intensity(tokens: u64, thresholds: &[u64; HEAT_LEVELS - 2]) -> u8 {
     if tokens == 0 {
         return 0;
     }
 
-    let [first, second, third] = *thresholds;
-    if tokens <= first {
-        1
-    } else if tokens <= second {
-        2
-    } else if tokens <= third {
-        3
-    } else {
-        4
+    for (index, edge) in thresholds.iter().enumerate() {
+        if tokens <= *edge {
+            return (index + 1) as u8;
+        }
     }
+
+    (HEAT_LEVELS - 1) as u8
 }
 
 pub fn weekday_labels() -> [Weekday; 7] {
@@ -134,7 +141,7 @@ pub fn weekday_labels() -> [Weekday; 7] {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_heatmap_data, intensity_thresholds, map_intensity};
+    use super::{HEAT_LEVELS, build_heatmap_data, intensity_thresholds, map_intensity};
     use crate::db::models::{TokenUsage, UsageEvent};
     use crate::utils::time::TimeRange;
     use chrono::{Datelike, Duration, Local, NaiveDate};
@@ -176,8 +183,8 @@ mod tests {
         }
     }
 
-    fn level_counts(data: &super::HeatmapData) -> [usize; 5] {
-        let mut counts = [0usize; 5];
+    fn level_counts(data: &super::HeatmapData) -> [usize; HEAT_LEVELS] {
+        let mut counts = [0usize; HEAT_LEVELS];
         for week in &data.weeks {
             for cell in week {
                 counts[cell.intensity as usize] += 1;
@@ -186,13 +193,13 @@ mod tests {
         counts
     }
 
-    fn thresholds(values: &[u64]) -> [u64; 3] {
+    fn thresholds(values: &[u64]) -> [u64; HEAT_LEVELS - 2] {
         intensity_thresholds(values.iter().copied())
     }
 
-    fn levels(values: &[u64]) -> [usize; 5] {
+    fn levels(values: &[u64]) -> [usize; HEAT_LEVELS] {
         let edges = thresholds(values);
-        let mut counts = [0usize; 5];
+        let mut counts = [0usize; HEAT_LEVELS];
         for tokens in values {
             counts[map_intensity(*tokens, &edges) as usize] += 1;
         }
@@ -264,38 +271,39 @@ mod tests {
     }
 
     #[test]
-    fn thresholds_are_the_nearest_rank_quartiles() {
+    fn thresholds_are_the_nearest_rank_quintiles() {
         let series = (1..=100u64).collect::<Vec<_>>();
-        assert_eq!(thresholds(&series), [25, 50, 75]);
+        assert_eq!(thresholds(&series), [20, 40, 60, 80]);
     }
 
     #[test]
     fn maps_levels_from_the_thresholds() {
-        let edges = [10, 30, 60];
+        let edges = [10, 30, 50, 70];
 
         assert_eq!(map_intensity(0, &edges), 0);
         assert_eq!(map_intensity(5, &edges), 1);
         assert_eq!(map_intensity(10, &edges), 1);
         assert_eq!(map_intensity(11, &edges), 2);
         assert_eq!(map_intensity(30, &edges), 2);
-        assert_eq!(map_intensity(60, &edges), 3);
-        assert_eq!(map_intensity(61, &edges), 4);
+        assert_eq!(map_intensity(50, &edges), 3);
+        assert_eq!(map_intensity(70, &edges), 4);
+        assert_eq!(map_intensity(71, &edges), 5);
     }
 
     #[test]
     fn tied_days_share_a_bucket() {
-        assert_eq!(thresholds(&[7, 7, 7, 7]), [7, 7, 7]);
-        assert_eq!(map_intensity(7, &[7, 7, 7]), 1);
+        assert_eq!(thresholds(&[7, 7, 7, 7]), [7, 7, 7, 7]);
+        assert_eq!(map_intensity(7, &[7, 7, 7, 7]), 1);
     }
 
     #[test]
     fn sparse_windows_are_handled() {
-        assert_eq!(thresholds(&[]), [0, 0, 0]);
-        assert_eq!(thresholds(&[5]), [5, 5, 5]);
-        assert_eq!(thresholds(&[5, 9]), [5, 5, 9]);
+        assert_eq!(thresholds(&[]), [0, 0, 0, 0]);
+        assert_eq!(thresholds(&[5]), [5, 5, 5, 5]);
+        assert_eq!(thresholds(&[5, 9]), [5, 5, 9, 9]);
 
-        assert_eq!(map_intensity(5, &[5, 5, 5]), 1);
-        assert_eq!(map_intensity(9, &[5, 5, 9]), 3);
+        assert_eq!(map_intensity(5, &[5, 5, 5, 5]), 1);
+        assert_eq!(map_intensity(9, &[5, 5, 9, 9]), 3);
     }
 
     #[test]
@@ -307,14 +315,14 @@ mod tests {
 
         let counts = levels(&series);
 
-        for level in 1..=4 {
+        for level in 1..HEAT_LEVELS {
             assert!(
                 counts[level] > 0,
                 "every level must be used, got {counts:?}"
             );
         }
         assert!(
-            counts[1] <= series.len() / 4 + 1,
+            counts[1] <= series.len() / 5 + 1,
             "the lowest level must not hold most active days, got {counts:?}"
         );
     }
@@ -381,7 +389,7 @@ mod tests {
             today(),
         ));
 
-        for level in 1..=4 {
+        for level in 1..HEAT_LEVELS {
             assert!(
                 counts[level] > 0,
                 "a week of usage must still spread across the levels, got {counts:?}"
@@ -406,6 +414,6 @@ mod tests {
     fn an_empty_range_renders_as_empty() {
         let data = build_heatmap_data(&[], TimeRange::Last7Days, today());
 
-        assert_eq!(level_counts(&data), [14, 0, 0, 0, 0]);
+        assert_eq!(level_counts(&data), [14, 0, 0, 0, 0, 0]);
     }
 }

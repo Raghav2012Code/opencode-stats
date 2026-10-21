@@ -4,6 +4,8 @@ use clap::ValueEnum;
 use ratatui::style::{Color, Modifier, Style};
 use serde::Deserialize;
 
+use crate::analytics::heatmap_data::HEAT_LEVELS;
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum ThemeMode {
@@ -42,7 +44,7 @@ pub struct Theme {
     pub tab_active_fg: Color,
     pub tab_active_bg: Color,
     pub heat_0: Color,
-    pub heat_4: Color,
+    pub heat_5: Color,
     pub model_series: [Color; 12],
 }
 
@@ -59,7 +61,7 @@ impl Theme {
             tab_active_fg: Color::Black,
             tab_active_bg: Color::Rgb(136, 192, 208),
             heat_0: Color::Rgb(94, 98, 115),
-            heat_4: Color::Rgb(136, 192, 208),
+            heat_5: Color::Rgb(136, 192, 208),
             model_series: [
                 Color::Rgb(191, 97, 106),
                 Color::Rgb(208, 135, 112),
@@ -89,7 +91,7 @@ impl Theme {
             tab_active_fg: Color::White,
             tab_active_bg: Color::Rgb(0, 122, 163),
             heat_0: Color::Rgb(160, 170, 186),
-            heat_4: Color::Rgb(0, 122, 163),
+            heat_5: Color::Rgb(0, 122, 163),
             model_series: [
                 Color::Rgb(167, 40, 40),
                 Color::Rgb(175, 94, 0),
@@ -134,14 +136,15 @@ impl Theme {
         self.model_series[index % self.model_series.len()]
     }
 
-    /// The colour of a heatmap intensity level. Level 0 is the empty colour and level 4
-    /// the active one, so levels 1-3 are derived from the theme's two endpoints rather
-    /// than configured.
+    /// The colour of a heatmap intensity level. Level 0 is the empty colour and the last
+    /// level the active one, so the levels between are derived from the theme's two
+    /// endpoints rather than configured.
     pub fn heat_level(&self, level: u8) -> Color {
+        let top = (HEAT_LEVELS - 1) as u8;
         match level {
             0 => self.heat_0,
-            level if level >= 4 => self.heat_4,
-            level => lerp_color(self.heat_0, self.heat_4, f32::from(level) / 4.0),
+            level if level >= top => self.heat_5,
+            level => lerp_color(self.heat_0, self.heat_5, f32::from(level) / f32::from(top)),
         }
     }
 }
@@ -240,6 +243,7 @@ fn parse_colorfgbg(value: &str) -> Option<ThemeKind> {
 #[cfg(test)]
 mod tests {
     use super::{Theme, ThemeKind, parse_colorfgbg, parse_mode_hint};
+    use crate::analytics::heatmap_data::HEAT_LEVELS;
 
     fn channel_delta(left: ratatui::style::Color, right: ratatui::style::Color) -> u32 {
         let (
@@ -258,7 +262,7 @@ mod tests {
     #[test]
     fn builtin_themes_have_a_distinct_heat_ramp() {
         for theme in [Theme::builtin_dark(), Theme::builtin_light()] {
-            let levels = (0..=4)
+            let levels = (0..HEAT_LEVELS as u8)
                 .map(|level| theme.heat_level(level))
                 .collect::<Vec<_>>();
 
@@ -275,7 +279,7 @@ mod tests {
             }
 
             assert_eq!(levels[0], theme.heat_0);
-            assert_eq!(levels[4], theme.heat_4);
+            assert_eq!(levels[HEAT_LEVELS - 1], theme.heat_5);
         }
     }
 
