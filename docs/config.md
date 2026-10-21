@@ -79,6 +79,9 @@ Free models are never filtered out: a model that cost nothing is still a row on
 the `Models` page, and its tokens count towards every total. A model with no
 price at all is kept and marked as missing — unknown is not zero.
 
+The `hide_zero_cost` key was removed with that rule: a config that still sets
+it fails at startup naming the unknown field. Delete the line.
+
 Totals, percentages and row counts always describe the rows that remain, on
 every surface: the TUI, `stats` and the export all build from the same
 snapshot. While a filter is active, the rule above the content says so.

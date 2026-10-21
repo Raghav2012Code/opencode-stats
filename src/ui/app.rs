@@ -1820,4 +1820,51 @@ mod tests {
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }
+
+    /// Writes the README screenshots from the machine's own database, with the same
+    /// share-card renderer the `s` key uses. Ignored by default: it writes into the
+    /// repository, and it needs a real database to read.
+    ///
+    /// Run it with `cargo test write_readme_screenshots -- --ignored`.
+    #[test]
+    #[ignore = "writes images/*.png from the machine's own database"]
+    fn write_readme_screenshots() {
+        use crate::ui::export::render_share_card;
+
+        let config = crate::config::app_config::AppConfig::load().unwrap();
+        let budget = config.budget.monthly_cap().unwrap();
+        let brand = config.brand.brand().unwrap();
+        let view = config.view.view();
+
+        for (page, name, light) in [
+            (Page::Overview, "overview", false),
+            (Page::Models, "models", false),
+            (Page::Providers, "providers", false),
+            (Page::Sessions, "card", true),
+        ] {
+            let data = crate::db::queries::load_app_data(&no_input_options()).unwrap();
+            let pricing = crate::cache::models_cache::PricingCatalog::load().unwrap();
+            let theme = if light {
+                Theme::builtin_light()
+            } else {
+                Theme::builtin_dark()
+            };
+            let app = App::new(
+                data,
+                pricing,
+                theme,
+                ZeroCostBehavior::KeepZero,
+                no_input_options(),
+                page,
+                TimeRange::All,
+                view.clone(),
+                budget,
+                brand.clone(),
+                None,
+            );
+            let buffer = app.capture_current_page_buffer().unwrap();
+            let image = render_share_card(&buffer, &app.theme).unwrap();
+            image.save(format!("images/{name}.png")).unwrap();
+        }
+    }
 }

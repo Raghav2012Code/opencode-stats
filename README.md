@@ -33,7 +33,7 @@ This repository is **my personal fork** of [Cateds/opencode-stats](https://githu
 
 **A heatmap that reads**
 
-- Four-level colour ramp derived from the active theme, with a legend to match.
+- Five-level colour ramp derived from the active theme, with a legend to match.
 - Buckets by activity percentiles instead of fractions of the busiest day, so one heavy day cannot flatten a year of usage into the lowest shade.
 
 **Scriptable output**
@@ -45,12 +45,16 @@ This repository is **my personal fork** of [Cateds/opencode-stats](https://githu
 - A `Sessions` page ranked by cost, beside `Models` and `Providers`.
 - Live reload of the database without restarting.
 - `Overview` is the whole picture: always all time and without a range selector. The range applies to `Models`, `Providers` and `Sessions`, and is remembered while you move between pages.
+- A monthly budget on the `Overview`: what the calendar month cost, the cap, and what is left.
+- Activity streaks: the current run of days and the longest one, on the `Overview` and on every session.
 - The sessions list scrolls with the focus and stays inside its own area.
 - Copy the current view as a share card with `Ctrl+S` or `s`: the image goes to the clipboard, the card is also written as a PNG beside your exports, transient clipboard failures are retried, and the footer names exactly what landed.
 
 **Configuration**
 
-- An optional `[app]` section for `page`, `range` and `db`. Database precedence is `--db`, then `[app] db`, then `OC_STATS_DB_PATH`, then discovery. An invalid value fails at startup naming the key and the accepted values.
+- A `config.toml` with optional sections: `[app]` (`page`, `range`, `db`, `reload_every`), `[view]` (`project`, `pinned_models`, `pinned_providers`), `[budget]` (a monthly cap), `[brand]` (your own strings) and `[theme]`. Every key is optional, and an invalid value fails at startup naming the key and the accepted values.
+- Database precedence is `--db`, then `[app] db`, then `OC_STATS_DB_PATH`, then discovery.
+- The full reference — every section, its values and defaults — is in [`docs/config.md`](docs/config.md).
 
 **Fixes**
 
@@ -193,6 +197,10 @@ page  = "sessions"   # overview | models | providers | sessions
 range = "7d"         # all | today | 7d | 30d
 db    = "D:\\snapshots\\opencode.db"
 
+[view]
+project = "volt-ledger"                # one project only
+pinned_models = ["space-bunny-free"]   # these rows come first
+
 [theme]
 default = "auto"     # auto | dark | light
 dark = "dark"
@@ -200,6 +208,8 @@ light = "light"
 ```
 
 The database is chosen in this order, most specific first: `--db`, then `[app] db`, then `OC_STATS_DB_PATH`, then discovery of the standard locations. Both named forms are authoritative — the path is used or reported missing, never quietly replaced by another database. An invalid value stops the program at startup and names the key and the values it accepts.
+
+Free models are never filtered out: a model that cost nothing is still a row, and its tokens count towards every total. The `[view] hide_zero_cost` key is gone, so a config that still sets it fails at startup naming the unknown field — delete the line.
 
 The full reference — every section, its values and defaults, plus copy-pasteable recipes — is in [`docs/config.md`](docs/config.md).
 
