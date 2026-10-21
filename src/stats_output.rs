@@ -21,7 +21,8 @@ pub enum StatsFormat {
 /// One stable `key=value` line for the overview of `snapshot`:
 ///
 /// `range=<name> tokens=<n> input=<n> output=<n> cache=<n> cost=<usd>
-/// sessions=<n> messages=<n> prompts=<n> models=<n> active_days=<n>`
+/// sessions=<n> messages=<n> prompts=<n> models=<n> active_days=<n>
+/// current_streak=<n> longest_streak=<n>`
 ///
 /// `<name>` is the `--range` name (`all|today|7d|30d`). Token counts and
 /// `cost` are the exact numbers the overview reports; `cost` is the known
@@ -31,7 +32,7 @@ pub enum StatsFormat {
 pub fn format_stats_line(snapshot: &AnalyticsSnapshot, range: TimeRange) -> String {
     let overview = &snapshot.overview;
     format!(
-        "range={} tokens={} input={} output={} cache={} cost={} sessions={} messages={} prompts={} models={} active_days={}",
+        "range={} tokens={} input={} output={} cache={} cost={} sessions={} messages={} prompts={} models={} active_days={} current_streak={} longest_streak={}",
         range.cli_name(),
         overview.total_tokens,
         overview.input_tokens,
@@ -43,6 +44,8 @@ pub fn format_stats_line(snapshot: &AnalyticsSnapshot, range: TimeRange) -> Stri
         overview.prompts,
         overview.models_used,
         overview.active_days,
+        overview.current_streak,
+        overview.longest_streak,
     )
 }
 
@@ -67,6 +70,8 @@ pub fn stats_json(snapshot: &AnalyticsSnapshot, range: TimeRange) -> serde_json:
             "prompts": overview.prompts,
             "models": overview.models_used,
             "active_days": overview.active_days,
+            "current_streak": overview.current_streak,
+            "longest_streak": overview.longest_streak,
         },
         "models": snapshot.models.iter().map(usage_row_json).collect::<Vec<_>>(),
         "providers": snapshot.providers.iter().map(usage_row_json).collect::<Vec<_>>(),
@@ -125,6 +130,7 @@ fn session_row_json(row: &SessionUsageRow) -> serde_json::Value {
         "messages": row.messages,
         "prompts": row.prompts,
         "active_days": row.active_days,
+        "longest_streak": row.longest_streak,
         "elapsed_secs": row.elapsed_secs(),
         "percentage": row.percentage,
     })
@@ -134,11 +140,13 @@ fn session_row_json(row: &SessionUsageRow) -> serde_json::Value {
 /// overview, model and provider. Every row has the same columns, so the output opens
 /// directly in a spreadsheet:
 ///
-/// `range,section,id,title,tokens,input,output,cache,cost,sessions,messages,prompts,models,active_days,percentage`
+/// `range,section,id,title,tokens,input,output,cache,cost,sessions,messages,prompts,models,active_days,current_streak,longest_streak,percentage`
 ///
 /// Costs are plain decimals and percentages keep two decimals. The `models` column
 /// applies to the overview row only, `title` to session rows and `percentage` to model,
-/// provider and session rows; the others stay empty so every row keeps the same columns.
+/// provider and session rows; `current_streak` applies to the overview row only and
+/// `longest_streak` to overview and session rows; the others stay empty so every row
+/// keeps the same columns.
 /// Fields containing a comma, double quote, carriage return or newline are quoted per
 /// RFC 4180, with inner quotes doubled. The heatmap window is not tabular and lives
 /// only in [`stats_json`].
@@ -146,7 +154,7 @@ pub fn stats_csv(snapshot: &AnalyticsSnapshot, range: TimeRange) -> String {
     let overview = &snapshot.overview;
     let name = range.cli_name();
     let mut rows = vec![format!(
-        "{},overview,,,{},{},{},{},{},{},{},{},{},{},",
+        "{},overview,,,{},{},{},{},{},{},{},{},{},{},{},{},",
         name,
         overview.total_tokens,
         overview.input_tokens,
@@ -158,6 +166,8 @@ pub fn stats_csv(snapshot: &AnalyticsSnapshot, range: TimeRange) -> String {
         overview.prompts,
         overview.models_used,
         overview.active_days,
+        overview.current_streak,
+        overview.longest_streak,
     )];
     for (section, id, title, row) in snapshot
         .models
@@ -185,6 +195,8 @@ pub fn stats_csv(snapshot: &AnalyticsSnapshot, range: TimeRange) -> String {
             row.prompts.to_string(),
             String::new(),
             row.active_days.to_string(),
+            String::new(),
+            String::new(),
             format!("{:.2}", row.percentage),
         ];
         rows.push(fields.join(","));
@@ -205,13 +217,15 @@ pub fn stats_csv(snapshot: &AnalyticsSnapshot, range: TimeRange) -> String {
             row.prompts.to_string(),
             String::new(),
             row.active_days.to_string(),
+            String::new(),
+            row.longest_streak.to_string(),
             format!("{:.2}", row.percentage),
         ];
         rows.push(fields.join(","));
     }
 
     let mut output = String::from(
-        "range,section,id,title,tokens,input,output,cache,cost,sessions,messages,prompts,models,active_days,percentage\n",
+        "range,section,id,title,tokens,input,output,cache,cost,sessions,messages,prompts,models,active_days,current_streak,longest_streak,percentage\n",
     );
     for row in rows {
         output.push_str(&row);
@@ -354,7 +368,7 @@ mod tests {
         assert_eq!(
             format_stats_line(&snapshot, TimeRange::Today),
             "range=today tokens=130 input=100 output=20 cache=10 cost=1.23 \
-             sessions=2 messages=5 prompts=2 models=1 active_days=1",
+             sessions=2 messages=5 prompts=2 models=1 active_days=1 current_streak=1 longest_streak=1",
         );
     }
 
@@ -434,13 +448,13 @@ mod tests {
 
         assert_eq!(
             lines.next().unwrap(),
-            "range,section,id,title,tokens,input,output,cache,cost,sessions,messages,prompts,models,active_days,percentage",
+            "range,section,id,title,tokens,input,output,cache,cost,sessions,messages,prompts,models,active_days,current_streak,longest_streak,percentage",
         );
         // Overview + one model + one provider.
         let body = lines.collect::<Vec<_>>();
         assert_eq!(body.len(), 3);
         for line in &body {
-            assert_eq!(field_count(line), 15, "uniform columns: {line}");
+            assert_eq!(field_count(line), 17, "uniform columns: {line}");
         }
     }
 
@@ -455,12 +469,12 @@ mod tests {
         let output = stats_csv(&snapshot, TimeRange::Today);
 
         assert!(output.starts_with("range,section,id,title,"));
-        assert!(output.contains("today,overview,,,130,100,20,10,1.23,2,5,2,1,1,"));
+        assert!(output.contains("today,overview,,,130,100,20,10,1.23,2,5,2,1,1,1,1,"));
         assert!(output.contains(
-            "today,model,\"acme, \"\"quoted\"\"\nmodel\",,130,100,20,10,1.23,2,4,1,,1,75.00"
+            "today,model,\"acme, \"\"quoted\"\"\nmodel\",,130,100,20,10,1.23,2,4,1,,1,,,75.00"
         ));
         assert!(output.contains(
-            "today,provider,\"acme \"\"quoted\"\" provider\",,130,100,20,10,1.23,2,4,1,,1,75.00"
+            "today,provider,\"acme \"\"quoted\"\" provider\",,130,100,20,10,1.23,2,4,1,,1,,,75.00"
         ));
         assert!(output.ends_with('\n'));
     }
@@ -475,15 +489,16 @@ mod tests {
         assert_eq!(value["sessions"][0]["id"], "ses_1");
         assert_eq!(value["sessions"][0]["title"], "Big, \"quoted\" job");
         assert_eq!(value["sessions"][0]["project"], "demo");
+        assert_eq!(value["sessions"][0]["longest_streak"], 1);
         assert_eq!(value["sessions"][0]["is_subagent"], false);
         assert_eq!(value["sessions"][0]["messages"], 4);
 
         let output = stats_csv(&snapshot, TimeRange::Today);
         assert!(output.contains(
-            "today,session,ses_1,\"Big, \"\"quoted\"\" job\",130,100,20,10,1.23,,4,1,,1,75.00"
+            "today,session,ses_1,\"Big, \"\"quoted\"\" job\",130,100,20,10,1.23,,4,1,,1,,1,75.00"
         ));
         for line in output.lines().skip(1) {
-            assert_eq!(field_count(line), 15, "uniform columns: {line}");
+            assert_eq!(field_count(line), 17, "uniform columns: {line}");
         }
     }
 
@@ -495,6 +510,9 @@ mod tests {
         assert_eq!(value["range"], "today");
         assert_eq!(value["overview"]["tokens"], 130);
         assert_eq!(value["overview"]["sessions"], 2);
+        assert_eq!(value["overview"]["active_days"], 1);
+        assert_eq!(value["overview"]["current_streak"], 1);
+        assert_eq!(value["overview"]["longest_streak"], 1);
         assert_eq!(value["models"].as_array().unwrap().len(), 1);
         assert_eq!(value["models"][0]["id"], "acme \"quoted\" model");
         assert_eq!(value["providers"].as_array().unwrap().len(), 1);
@@ -549,6 +567,10 @@ mod tests {
             ("prompts", "prompts"),
             ("models", "models"),
             ("active_days", "active_days"),
+            ("current_streak", "current_streak"),
+            ("longest_streak", "longest_streak"),
+            ("current_streak", "current_streak"),
+            ("longest_streak", "longest_streak"),
         ] {
             assert_eq!(
                 overview[json_key].as_u64().unwrap().to_string(),
