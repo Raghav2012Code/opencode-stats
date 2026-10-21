@@ -1398,6 +1398,49 @@ mod tests {
     }
 
     #[test]
+    fn the_favourite_model_leads_and_the_budget_closes_the_facts() {
+        // The favourite opens the block of facts, the budget closes it: the cap is the
+        // last thing said about the numbers, not the first.
+        let now = Local::now();
+        let mut event = test_event();
+        event.created_at = Some(now);
+        event.session_started_at = Some(now);
+        event.stored_cost_usd = Some(rust_decimal::Decimal::ONE);
+
+        let app = App::new(
+            test_data(vec![event]),
+            test_pricing(),
+            Theme::builtin_dark(),
+            ZeroCostBehavior::KeepZero,
+            no_input_options(),
+            Page::Overview,
+            TimeRange::All,
+            View::default(),
+            Some(cap_decimal("10")),
+            Brand::default(),
+            None,
+        );
+        let lines: Vec<String> = frame_text(&app, 100, 24)
+            .lines()
+            .map(str::to_string)
+            .collect();
+        let row = |needle: &str| {
+            lines
+                .iter()
+                .position(|line| line.contains(needle))
+                .unwrap_or_else(|| panic!("{needle:?} is not on screen: {lines:?}"))
+        };
+
+        let favourite = row("Favorite model");
+        let total_tokens = row("Total tokens");
+        let active_days = row("Active days");
+        let budget = row("Budget");
+
+        assert!(favourite < total_tokens, "the favourite opens the block");
+        assert!(active_days < budget, "the budget closes it");
+    }
+
+    #[test]
     fn no_budget_configured_renders_no_budget_line() {
         let app = test_app(test_data(vec![test_event()]), no_input_options());
         let frame = frame_text(&app, 100, 24);

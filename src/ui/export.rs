@@ -183,11 +183,14 @@ fn trimmed_buffer(buffer: &Buffer) -> Buffer {
         return buffer.clone();
     }
 
-    let trimmed_height = buffer.area.height - 3;
+    // The rule above the content and the hint row below it are the frame, not the
+    // content: they go, and the card draws its own border instead. Every row between
+    // them is content and stays - the closing sentence of the Overview is one of them.
+    let trimmed_height = buffer.area.height - 2;
     let trimmed_width = buffer.area.width - 2;
     let mut content = Vec::with_capacity(trimmed_width as usize * trimmed_height as usize);
 
-    for y in 1..buffer.area.height - 2 {
+    for y in 1..buffer.area.height - 1 {
         for x in 1..buffer.area.width - 1 {
             if let Some(cell) = buffer.cell((x, y)) {
                 content.push(cell.clone());
@@ -517,6 +520,35 @@ mod tests {
         assert_eq!(braille_pattern("\u{28ff}"), Some(u8::MAX));
         assert_eq!(braille_pattern("a"), None);
         assert_eq!(braille_pattern("\u{2801}x"), None);
+    }
+
+    #[test]
+    fn the_trim_drops_the_frame_and_keeps_every_content_row() {
+        // The rule above the content and the hint row below it are the frame: they go.
+        // The last line of the content is not a frame row, so it stays.
+        let mut buffer = Buffer::empty(ratatui::layout::Rect::new(0, 0, 6, 5));
+        for y in 0..5 {
+            buffer.set_string(1, y, format!("row{y}"), ratatui::style::Style::default());
+        }
+
+        let trimmed = trimmed_buffer(&buffer);
+
+        assert_eq!(trimmed.area.height, 3);
+        assert_eq!(trimmed.area.width, 4);
+        let text: String = trimmed.content().iter().map(|cell| cell.symbol()).collect();
+        assert!(
+            !text.contains("row0"),
+            "the rule above the content goes: {text:?}"
+        );
+        assert!(text.contains("row1"), "{text:?}");
+        assert!(
+            text.contains("row3"),
+            "the last content row stays: {text:?}"
+        );
+        assert!(
+            !text.contains("row4"),
+            "the hint row below it goes: {text:?}"
+        );
     }
 
     #[test]

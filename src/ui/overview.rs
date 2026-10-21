@@ -18,7 +18,7 @@ pub fn render_overview(
     brand: &Brand,
     theme: &Theme,
 ) {
-    let [heatmap, legend, spacer, favorite, stats, _, fun] = Layout::default()
+    let [heatmap, legend, spacer, favorite, stats, budget_row, fun] = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(8),
@@ -45,10 +45,10 @@ pub fn render_overview(
     );
     frame.render_widget(Paragraph::new(""), spacer);
 
-    // The budget line takes the spacer row, so the layout below never moves and a
-    // dashboard without a budget draws exactly as before.
+    // The budget takes the blank row under the metrics, so the block above it never
+    // moves and a dashboard without a budget draws exactly as before.
     if let Some(budget) = budget {
-        frame.render_widget(Paragraph::new(budget_line(budget, theme)), spacer);
+        frame.render_widget(Paragraph::new(budget_line(budget, theme)), budget_row);
     }
 
     // A configured tagline replaces the header line; otherwise the favourite model
