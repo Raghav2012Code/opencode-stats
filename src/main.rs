@@ -5,6 +5,8 @@ mod db;
 mod stats_output;
 #[cfg(test)]
 mod test_support;
+#[cfg(test)]
+mod benchmark;
 mod ui;
 mod utils;
 

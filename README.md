@@ -314,6 +314,19 @@ Free models are always included: they appear as rows with a `$0.00` cost, and th
 - Understand recent and long-term usage trends
 - Export statistics as images or text for easy sharing
 
+## Baseline benchmark
+
+Synthetic perf baseline for cold start (`load_app_data` + `build_snapshot`) and
+find-filter keystrokes, used for the slow-open / slow-typing complaint (#43):
+
+```bash
+cargo test baseline -- --nocapture
+```
+
+Scale it with `OC_STATS_BENCH_SESSIONS` (default 500) and `OC_STATS_BENCH_MSGS`
+(default 30). The run prints timings and writes a JSON report; the temp database
+is deleted afterwards.
+
 ## License
 
 MIT. The original work is copyright © 2026 Cateds, and the changes in this fork are released under the same license. See [LICENSE](./LICENSE) for the full text — keep the copyright notice with any copy or substantial portion of the software, as MIT requires.
