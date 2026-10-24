@@ -155,7 +155,10 @@ fn build_rows(
         let entry = grouped.entry(key).or_default();
         match message.role.as_deref() {
             Some("assistant") => entry.messages += 1,
-            Some("user") => entry.prompts += 1,
+            Some("user") => {
+                entry.messages += 1;
+                entry.prompts += 1;
+            }
             _ => {}
         }
     }
@@ -237,7 +240,10 @@ pub fn build_session_rows(
         let entry = grouped.entry(message.session_id.clone()).or_default();
         match message.role.as_deref() {
             Some("assistant") => entry.messages += 1,
-            Some("user") => entry.prompts += 1,
+            Some("user") => {
+                entry.messages += 1;
+                entry.prompts += 1;
+            }
             _ => {}
         }
     }
@@ -706,7 +712,8 @@ mod tests {
         assert_eq!(rows[0].prompts, 0);
         assert_eq!(rows[1].id, "ses_cheap");
         assert!(!rows[1].is_subagent);
-        assert_eq!(rows[1].messages, 1);
+        // One user turn and one assistant turn: two messages, one of them a prompt.
+        assert_eq!(rows[1].messages, 2);
         assert_eq!(rows[1].prompts, 1);
         assert!(rows[0].percentage > rows[1].percentage);
     }
