@@ -381,9 +381,15 @@ where
         };
     }
 
+    // A ranged chart spans the whole range, up to today, even where the first days have no
+    // usage; "all time" spans only the days that have data.
+    let (first_day, last_day) = match range.start_date(today) {
+        Some(start) => (start, today),
+        None => (min_date, max_date),
+    };
     let mut days = Vec::new();
-    let mut cursor = min_date;
-    while cursor <= max_date {
+    let mut cursor = first_day;
+    while cursor <= last_day {
         days.push(cursor);
         cursor += chrono::Duration::days(1);
     }
@@ -429,16 +435,29 @@ where
 }
 
 fn format_label(date: &NaiveDate) -> String {
-    format!("{} {:<2}", date.format("%b"), date.day())
+    format!("{} {}", date.format("%b"), date.day())
 }
 
+/// `Sep 12 '26`: the apostrophe marks the year, so `26` cannot read as a day.
 fn format_label_all(date: &NaiveDate) -> String {
     format!(
-        "{} {} {:<2}",
-        date.year() % 100,
+        "{} {} '{:02}",
         date.format("%b"),
-        date.day()
+        date.day(),
+        date.year() % 100
     )
+}
+
+/// `count` positions spread evenly over `len` days, first and last included. Ticks sit
+/// evenly on screen, so each label has to name the day at its own even position.
+fn label_indices(len: usize, count: usize) -> Vec<usize> {
+    let last = len.saturating_sub(1);
+    if count < 2 {
+        return vec![last];
+    }
+    (0..count)
+        .map(|k| ((k * last) as f64 / (count - 1) as f64).round() as usize)
+        .collect()
 }
 
 fn build_x_labels(days: &[NaiveDate], range: TimeRange) -> Vec<String> {
@@ -452,28 +471,14 @@ fn build_x_labels(days: &[NaiveDate], range: TimeRange) -> Vec<String> {
 
     match range {
         TimeRange::Last7Days | TimeRange::Today => days.iter().map(format_label).collect(),
-        TimeRange::Last30Days => {
-            let step = 5;
-            let last = days.len() - 1;
-            let mut labels: Vec<String> = (0..last)
-                .step_by(step)
-                .map(|i| format_label(&days[i]))
-                .collect();
-            labels.push(format_label(&days[last]));
-            labels
-        }
-        TimeRange::All => {
-            let n = days.len();
-            let step = (n - 1) / 4;
-            let last = n - 1;
-            vec![
-                format_label_all(&days[0]),
-                format_label_all(&days[step]),
-                format_label_all(&days[step * 2]),
-                format_label_all(&days[step * 3]),
-                format_label_all(&days[last]),
-            ]
-        }
+        TimeRange::Last30Days => label_indices(days.len(), 5)
+            .into_iter()
+            .map(|index| format_label(&days[index]))
+            .collect(),
+        TimeRange::All => label_indices(days.len(), 5)
+            .into_iter()
+            .map(|index| format_label_all(&days[index]))
+            .collect(),
     }
 }
 
@@ -510,7 +515,9 @@ fn nice_step(rough_step: f64) -> f64 {
 }
 
 fn format_tick_label(value: f64) -> String {
-    if value >= 1_000_000.0 {
+    if value >= 1_000_000_000.0 {
+        format!("{:.0}B", value / 1_000_000_000.0)
+    } else if value >= 1_000_000.0 {
         format!("{:.0}M", value / 1_000_000.0)
     } else if value >= 1_000.0 {
         format!("{:.0}K", value / 1_000.0)
@@ -837,5 +844,103 @@ mod tests {
         assert_eq!(chart.x_labels.len(), 3);
         assert_eq!(chart.x_labels[0], "Mar 12");
         assert_eq!(chart.x_labels[2], "Mar 12");
+    }
+
+    fn event_on(model: &str, day: NaiveDate) -> UsageEvent {
+        let at = day
+            .and_hms_opt(9, 0, 0)
+            .unwrap()
+            .and_local_timezone(Local)
+            .unwrap();
+        UsageEvent {
+            session_id: "ses_1".to_string(),
+            parent_session_id: None,
+            session_title: None,
+            session_started_at: Some(at),
+            session_archived_at: None,
+            project_name: None,
+            project_path: None,
+            provider_id: Some("openai".to_string()),
+            model_id: model.to_string(),
+            agent: None,
+            finish_reason: Some("stop".to_string()),
+            tokens: TokenUsage {
+                input: 1,
+                output: 2,
+                cache_read: 0,
+                cache_write: 0,
+            },
+            created_at: Some(at),
+            completed_at: Some(at),
+            stored_cost_usd: None,
+        }
+    }
+
+    #[test]
+    fn a_ranged_chart_spans_the_whole_range_up_to_today() {
+        // Usage only two days ago in a 7-day window: the chart still covers all seven days.
+        let today = NaiveDate::from_ymd_opt(2026, 10, 24).unwrap();
+        let event = event_on("gpt-5", today - chrono::Duration::days(2));
+        let chart = build_chart_for_models(
+            &[&event],
+            &["gpt-5".to_string()],
+            TimeRange::Last7Days,
+            today,
+            |event| event.model_id.clone(),
+        );
+
+        assert_eq!(chart.series[0].points.len(), 7);
+        assert_eq!(chart.x_labels.len(), 7);
+        assert_eq!(chart.x_labels[0], "Oct 18");
+        assert_eq!(chart.x_labels[6], "Oct 24");
+    }
+
+    #[test]
+    fn the_thirty_day_chart_labels_sit_at_even_positions() {
+        let today = NaiveDate::from_ymd_opt(2026, 10, 24).unwrap();
+        let event = event_on("gpt-5", today - chrono::Duration::days(29));
+        let chart = build_chart_for_models(
+            &[&event],
+            &["gpt-5".to_string()],
+            TimeRange::Last30Days,
+            today,
+            |event| event.model_id.clone(),
+        );
+
+        // 30 days, 5 labels: indices 0, 7, 15, 22, 29 (each share rounded to a whole day).
+        assert_eq!(
+            chart.x_labels,
+            ["Sep 25", "Oct 2", "Oct 10", "Oct 17", "Oct 24"]
+        );
+    }
+
+    #[test]
+    fn all_time_labels_carry_the_year_and_sit_at_even_positions() {
+        let first = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
+        let last = NaiveDate::from_ymd_opt(2026, 10, 24).unwrap();
+        let events = [event_on("gpt-5", first), event_on("gpt-5", last)];
+        let refs = events.iter().collect::<Vec<_>>();
+        let chart = build_chart_for_models(
+            &refs,
+            &["gpt-5".to_string()],
+            TimeRange::All,
+            last,
+            |event| event.model_id.clone(),
+        );
+
+        let span = (last - first).num_days();
+        assert_eq!(chart.x_labels.len(), 5);
+        assert_eq!(chart.x_labels[0], "Mar 1 '26");
+        assert_eq!(chart.x_labels[4], "Oct 24 '26");
+        // The middle label names the day at the middle of the span.
+        let middle = first + chrono::Duration::days((span as f64 / 2.0).round() as i64);
+        assert_eq!(chart.x_labels[2], super::format_label_all(&middle));
+    }
+
+    #[test]
+    fn large_tick_values_are_written_in_billions() {
+        assert_eq!(super::format_tick_label(150_000_000_000.0), "150B");
+        assert_eq!(super::format_tick_label(2_000_000_000.0), "2B");
+        assert_eq!(super::format_tick_label(3_000_000.0), "3M");
     }
 }
