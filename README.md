@@ -324,8 +324,10 @@ cargo test baseline -- --nocapture
 ```
 
 Scale it with `OC_STATS_BENCH_SESSIONS` (default 500) and `OC_STATS_BENCH_MSGS`
-(default 30). The run prints timings and writes a JSON report; the temp database
-is deleted afterwards.
+(default 30). Point `OC_STATS_BENCH_DB` at an existing database to measure that
+one instead (`/path/to/opencode.db`); the find test then types over its session
+titles, as the Sessions page does. The run prints timings and writes a JSON
+report; a synthetic database is deleted afterwards, a real one is left alone.
 
 ## License
 

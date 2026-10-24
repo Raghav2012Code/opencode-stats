@@ -1,12 +1,12 @@
 mod analytics;
+#[cfg(test)]
+mod benchmark;
 mod cache;
 mod config;
 mod db;
 mod stats_output;
 #[cfg(test)]
 mod test_support;
-#[cfg(test)]
-mod benchmark;
 mod ui;
 mod utils;
 

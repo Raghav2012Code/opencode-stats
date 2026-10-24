@@ -10,6 +10,10 @@
 //! Size is configurable through the environment so a machine can scale it:
 //!   OC_STATS_BENCH_SESSIONS   number of sessions     (default 500)
 //!   OC_STATS_BENCH_MSGS       messages per session   (default 30)
+//!
+//! A real database can be measured instead of the synthetic one; the find test
+//! then types over its session titles, as the Sessions page does:
+//!   OC_STATS_BENCH_DB         path to an opencode.db
 
 use crate::analytics::build_snapshot;
 use crate::cache::models_cache::{PricingAvailability, PricingCatalog};
@@ -43,6 +47,7 @@ fn env_usize(key: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn message_json(
     role: &str,
     model: Option<&str>,
@@ -74,7 +79,9 @@ fn message_json(
     }
     // Modern messages keep the role in the `type` column, but including it
     // in the payload is harmless and keeps the JSON self-contained.
-    msg.as_object_mut().unwrap().insert("role".into(), json!(role));
+    msg.as_object_mut()
+        .unwrap()
+        .insert("role".into(), json!(role));
     msg.to_string()
 }
 
@@ -205,7 +212,16 @@ fn baseline_cold_start_and_find_filter_timing() {
     let sessions = env_usize("OC_STATS_BENCH_SESSIONS", 500);
     let msgs = env_usize("OC_STATS_BENCH_MSGS", 30);
 
-    let db_path = create_synthetic_database(sessions, msgs);
+    // With OC_STATS_BENCH_DB set, the run measures that database and leaves it
+    // alone; otherwise a synthetic one is built and removed afterwards.
+    let real_db = std::env::var("OC_STATS_BENCH_DB")
+        .ok()
+        .filter(|path| !path.trim().is_empty())
+        .map(PathBuf::from);
+    let db_path = match &real_db {
+        Some(path) => path.clone(),
+        None => create_synthetic_database(sessions, msgs),
+    };
     let size_bytes = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
 
     // Cold start: load + snapshot, exactly what the app does before the first frame.
@@ -213,11 +229,11 @@ fn baseline_cold_start_and_find_filter_timing() {
     let data = load_app_data(&InputOptions {
         database_path: Some(db_path.clone()),
     })
-    .expect("the synthetic database must load");
+    .expect("the benchmark database must load");
     let load_ms = load_start.elapsed().as_secs_f64() * 1000.0;
 
     let snap_start = Instant::now();
-    let _snapshot = build_snapshot(
+    let snapshot = build_snapshot(
         &data,
         &empty_pricing(),
         TimeRange::All,
@@ -226,10 +242,17 @@ fn baseline_cold_start_and_find_filter_timing() {
     let snap_ms = snap_start.elapsed().as_secs_f64() * 1000.0;
     let total_ms = load_ms + snap_ms;
 
-    // Find filter: time each keystroke over a synthetic list matching a large
-    // sessions page. The real find path calls SearchState::update_filter which
-    // calls filter_indices internally.
-    let items = synthetic_search_items(sessions);
+    // Find filter: time each keystroke over the page's list. The real find path
+    // calls SearchState::update_filter, which calls filter_indices internally.
+    // On the Sessions page the list is the session titles.
+    let items = match &real_db {
+        Some(_) => snapshot
+            .sessions
+            .iter()
+            .map(|row| row.title.clone())
+            .collect(),
+        None => synthetic_search_items(sessions),
+    };
     let queries = ["g", "gp", "gpt-", "gpt-5", "cla", "clau", "claude", "x", ""];
     let mut keystrokes = Vec::new();
     for q in &queries {
@@ -245,9 +268,10 @@ fn baseline_cold_start_and_find_filter_timing() {
     let report = serde_json::json!({
         "database": {
             "path": db_path.display().to_string(),
+            "source": if real_db.is_some() { "real" } else { "synthetic" },
             "size_bytes": size_bytes,
-            "sessions": sessions,
-            "messages": sessions * msgs,
+            "sessions": data.session_records.len(),
+            "messages": data.messages.len(),
             "events": data.events.len(),
         },
         "cold_start": {
@@ -269,9 +293,14 @@ fn baseline_cold_start_and_find_filter_timing() {
     std::fs::write(&report_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
 
     println!(
-        "\n=== baseline: {} sessions, {} messages, {} events, {} bytes ===",
-        sessions,
-        sessions * msgs,
+        "\n=== baseline ({}): {} sessions, {} messages, {} events, {} bytes ===",
+        if real_db.is_some() {
+            "real database"
+        } else {
+            "synthetic"
+        },
+        data.session_records.len(),
+        data.messages.len(),
         data.events.len(),
         size_bytes
     );
@@ -284,6 +313,8 @@ fn baseline_cold_start_and_find_filter_timing() {
     }
     println!("report: {}", report_path.display());
 
-    // Cleanup.
-    let _ = std::fs::remove_file(&db_path);
+    // Cleanup: only the database this run created.
+    if real_db.is_none() {
+        let _ = std::fs::remove_file(&db_path);
+    }
 }
