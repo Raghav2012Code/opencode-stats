@@ -9,7 +9,10 @@ use crate::ui::theme::Theme;
 
 /// One glyph per level, from no usage to the busiest day. The ink grows with the level,
 /// so the ramp still reads when the colours are close together.
-const LEVEL_GLYPHS: [char; HEAT_LEVELS] = ['·', '░', '▒', '▓', '▉', '█'];
+/// Lower-eighth blocks, one per level: each fills its cell's full width, so neighbouring
+/// cells join without a gap (a right-hand block such as `▉` would leave one), and the ink
+/// grows with the level.
+const LEVEL_GLYPHS: [char; HEAT_LEVELS] = ['·', '▁', '▃', '▅', '▇', '█'];
 
 pub struct HeatmapWidget<'a> {
     pub data: &'a HeatmapData,
@@ -22,15 +25,20 @@ impl Widget for HeatmapWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let mut lines = Vec::new();
 
+        // When the area is narrower than the year, the oldest weeks go, not the newest: the
+        // most recent days are the ones a glance is for.
+        let shown_weeks = (area.width as usize).saturating_sub(ROW_LABEL_WIDTH);
+        let skip = self.data.weeks.len().saturating_sub(shown_weeks);
+
         lines.push(Line::styled(
-            build_month_header(self.data, area.width as usize),
+            build_month_header(self.data, area.width as usize, skip),
             self.theme.muted_style(),
         ));
 
         for (row_index, weekday) in weekday_labels().iter().enumerate() {
             let name = weekday_label(row_index, weekday);
             let mut spans = vec![Span::styled(name, self.theme.muted_style())];
-            for week in &self.data.weeks {
+            for week in self.data.weeks.iter().skip(skip) {
                 let cell = &week[row_index];
                 let (symbol, style) = if cell.is_future {
                     (' ', Style::default())
@@ -66,13 +74,18 @@ pub fn heatmap_legend_line(theme: &Theme) -> Line<'static> {
     Line::from(spans)
 }
 
-fn build_month_header(data: &HeatmapData, max_width: usize) -> String {
-    let width = max_width.min(ROW_LABEL_WIDTH + data.weeks.len());
+/// The month names over the drawn weeks. `skip` leading weeks are not drawn, and the
+/// labels that belong to them are not either.
+fn build_month_header(data: &HeatmapData, max_width: usize, skip: usize) -> String {
+    let width = max_width.min(ROW_LABEL_WIDTH + data.weeks.len().saturating_sub(skip));
     let mut header = vec![' '; width];
     let mut next_free_column = ROW_LABEL_WIDTH;
 
     for (week_index, label) in &data.month_labels {
-        let start = ROW_LABEL_WIDTH + *week_index;
+        let Some(drawn_index) = week_index.checked_sub(skip) else {
+            continue;
+        };
+        let start = ROW_LABEL_WIDTH + drawn_index;
         if start < next_free_column || start >= width {
             continue;
         }
@@ -178,7 +191,7 @@ mod tests {
         }
         for x in 0..40u16 {
             if let Some(cell) = buffer.cell((x, 9))
-                && matches!(cell.symbol(), "·" | "░" | "▒" | "▓" | "▉" | "█")
+                && matches!(cell.symbol(), "·" | "▁" | "▃" | "▅" | "▇" | "█")
             {
                 legend.push(cell.fg);
             }
@@ -275,6 +288,54 @@ mod tests {
         }
     }
     #[test]
+    fn a_narrow_heatmap_keeps_the_newest_weeks_on_screen() {
+        // Twenty weeks, the last one busy. At 14 columns only the last ten weeks fit, so
+        // the busy week has to be the rightmost cell of the Monday row.
+        let quiet = || {
+            (0..7)
+                .map(|_| HeatmapCell {
+                    intensity: 0,
+                    is_future: false,
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut weeks = (0..20).map(|_| quiet()).collect::<Vec<_>>();
+        weeks[19][0].intensity = 5;
+        let data = HeatmapData {
+            weeks,
+            month_labels: Vec::new(),
+        };
+
+        let theme = Theme::builtin_dark();
+        let mut terminal = Terminal::new(TestBackend::new(14, 10)).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    HeatmapWidget {
+                        data: &data,
+                        theme: &theme,
+                    },
+                    Rect::new(0, 0, 14, 10),
+                );
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let monday: String = (0..14)
+            .map(|x| {
+                buffer
+                    .cell((x, 1))
+                    .map(|cell| cell.symbol().to_string())
+                    .unwrap_or_default()
+            })
+            .collect();
+
+        assert!(
+            monday.ends_with('█'),
+            "the newest week is cut off: {monday:?}"
+        );
+    }
+
+    #[test]
     fn every_heat_level_renders_a_distinct_colour() {
         for theme in [Theme::builtin_dark(), Theme::builtin_light()] {
             let (grid, _) = rendered_heat_colours(&theme);
@@ -324,10 +385,10 @@ mod tests {
             .iter()
             .map(|glyph| match glyph {
                 '·' => 0,
-                '░' => 1,
-                '▒' => 2,
-                '▓' => 3,
-                '▉' => 4,
+                '▁' => 1,
+                '▃' => 2,
+                '▅' => 3,
+                '▇' => 4,
                 '█' => 5,
                 other => panic!("unexpected level glyph {other:?}"),
             })
