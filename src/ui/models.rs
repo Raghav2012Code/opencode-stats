@@ -9,8 +9,8 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::analytics::AnalyticsSnapshot;
 use crate::analytics::model_stats::{SessionUsageRow, UsageRow, chart_with_focus};
 use crate::ui::theme::Theme;
-use crate::ui::widgets::common::{metric_line, truncate_label};
-use crate::ui::widgets::linechart::build_chart;
+use crate::ui::widgets::common::{metric_line_within, truncate_label, two_columns};
+use crate::ui::widgets::linechart::render_chart;
 use crate::utils::formatting::{format_price_summary, format_tokens};
 
 #[derive(Clone, Debug)]
@@ -182,7 +182,7 @@ pub fn render_models(
                 .and_then(|index| snapshot.models.get(index))
                 .map(ListRow::row_id);
             let chart = chart_with_focus(&snapshot.chart, focused_id);
-            frame.render_widget(build_chart(&chart, theme), body);
+            render_chart(frame, body, &chart, theme);
         },
         |frame, area, row| render_detail(frame, area, row, theme),
     );
@@ -357,12 +357,19 @@ pub(crate) fn render_metric_grid(
     pairs: &[(&str, String)],
     theme: &Theme,
 ) {
-    let cells = layout_rows::<5, 2>(area);
+    // Five rows of two columns: pairs fill the left column of each row, then the right.
+    let rows = Layout::vertical([Constraint::Length(1); 5]).areas::<5>(area);
 
-    for (index, (label, value)) in pairs.iter().take(cells.len() * cells[0].len()).enumerate() {
-        let cell = cells[index / cells[0].len()][index % cells[0].len()];
+    for (index, (label, value)) in pairs.iter().take(rows.len() * 2).enumerate() {
+        let [left, right] = two_columns(rows[index / 2]);
+        let cell = if index % 2 == 0 { left } else { right };
         frame.render_widget(
-            Paragraph::new(metric_line(label, value.clone(), theme)),
+            Paragraph::new(metric_line_within(
+                label,
+                value.clone(),
+                cell.width as usize,
+                theme,
+            )),
             cell,
         );
     }
@@ -383,7 +390,10 @@ fn render_detail(frame: &mut ratatui::Frame<'_>, area: Rect, row: &UsageRow, the
             ("Prompts: ", row.prompts.to_string()),
             (
                 "Rate: ",
-                format!("{:.2} tok/s", row.p50_output_tokens_per_second),
+                match row.p50_output_tokens_per_second {
+                    Some(rate) => format!("{rate:.2} tok/s"),
+                    None => "—".to_string(),
+                },
             ),
             ("Active days: ", row.active_days.to_string()),
         ],
@@ -416,7 +426,7 @@ pub fn render_providers(
                 .and_then(|index| snapshot.providers.get(index))
                 .map(ListRow::row_id);
             let chart = chart_with_focus(&snapshot.provider_chart, focused_id);
-            frame.render_widget(build_chart(&chart, theme), body);
+            render_chart(frame, body, &chart, theme);
         },
         |frame, area, row| render_detail(frame, area, row, theme),
     );
@@ -557,19 +567,6 @@ fn render_search_overlay<R: ListRow>(
 /// rows so the page answers its question at a glance; the detail panel below shows
 /// the focused session. There is no chart: with hundreds of sessions a per-session
 /// series would be noise.
-fn layout_rows<const ROW: usize, const COL: usize>(area: Rect) -> [[Rect; COL]; ROW] {
-    Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1); ROW])
-        .areas::<ROW>(area)
-        .map(|line| {
-            Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Fill(1); COL])
-                .areas::<COL>(line)
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::{render_models, render_providers};
@@ -594,7 +591,7 @@ mod tests {
             active_days: 1,
             cost: PriceSummary::default(),
             percentage: 100.0,
-            p50_output_tokens_per_second: 12.5,
+            p50_output_tokens_per_second: Some(12.5),
         }
     }
 
@@ -603,7 +600,6 @@ mod tests {
             x_bounds: [0.0, 1.0],
             y_bounds: [0.0, 1.0],
             x_labels: Vec::new(),
-            y_labels: Vec::new(),
             series: Vec::new(),
         }
     }
@@ -735,6 +731,16 @@ mod tests {
         ] {
             assert!(text.contains(expected), "missing {expected:?} in {text}");
         }
+    }
+
+    #[test]
+    fn a_row_with_no_measurable_rate_shows_a_dash_not_zero() {
+        let mut row = usage_row("gpt-5", 40);
+        row.p50_output_tokens_per_second = None;
+        let text = list_lines(&snapshot(vec![row], vec![]), false, 0, None, None).join("\n");
+
+        assert!(text.contains("Rate: —"), "{text}");
+        assert!(!text.contains("0.00 tok/s"), "{text}");
     }
 
     #[test]

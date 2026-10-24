@@ -274,7 +274,7 @@ mod tests {
             active_days: 1,
             cost: price(known),
             percentage: 75.0,
-            p50_output_tokens_per_second: 0.0,
+            p50_output_tokens_per_second: None,
         }
     }
 
@@ -329,7 +329,6 @@ mod tests {
                 x_bounds: [0.0, 1.0],
                 y_bounds: [0.0, 1.0],
                 x_labels: Vec::new(),
-                y_labels: Vec::new(),
                 series: Vec::new(),
             },
             providers: vec![row(
@@ -341,7 +340,6 @@ mod tests {
                 x_bounds: [0.0, 1.0],
                 y_bounds: [0.0, 1.0],
                 x_labels: Vec::new(),
-                y_labels: Vec::new(),
                 series: Vec::new(),
             },
             sessions: Vec::new(),

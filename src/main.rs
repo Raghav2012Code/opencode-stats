@@ -141,7 +141,8 @@ enum Command {
             <name> is one of all|today|7d|30d. Token counts and cost are the \
             exact numbers the overview reports; cost is the known USD total \
             as a plain decimal (0 when nothing is priced) and models is the \
-            number of distinct models used."
+            number of distinct models used. messages counts user and assistant turns, and \
+            prompts counts user turns."
     )]
     Stats {
         #[arg(

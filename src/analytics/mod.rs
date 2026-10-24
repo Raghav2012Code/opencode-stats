@@ -125,22 +125,16 @@ pub fn build_snapshot_view(
     if let Some(allowed) = &project_sessions {
         session_ids.retain(|id| allowed.contains(id));
     }
-    // Compaction digests are usage, not conversation: they must not inflate the
-    // message count the way a user or assistant turn does.
-    let messages = data
-        .messages
+    // The same messages the list pages count: dated in the range and inside the view, so
+    // the overview's totals equal the sums over the model and session rows. Compaction
+    // digests are usage, not conversation, and are not counted here.
+    let messages = filtered_messages
         .iter()
-        .filter(|message| {
-            session_ids.contains(&message.session_id)
-                && matches!(message.role.as_deref(), Some("assistant") | Some("user"))
-        })
+        .filter(|message| matches!(message.role.as_deref(), Some("assistant") | Some("user")))
         .count();
-    let prompts = data
-        .messages
+    let prompts = filtered_messages
         .iter()
-        .filter(|message| {
-            session_ids.contains(&message.session_id) && message.role.as_deref() == Some("user")
-        })
+        .filter(|message| message.role.as_deref() == Some("user"))
         .count();
     let sessions = session_ids.len();
     let models_used = filtered_events
@@ -489,6 +483,51 @@ mod tests {
             "unknown is not zero: the row is kept and marked as missing"
         );
         assert!(snapshot.overview.total_cost.missing);
+    }
+
+    #[test]
+    fn the_overview_and_the_rows_agree_on_messages_and_prompts() {
+        // User and assistant turns are messages; a user turn is also a prompt. A compaction
+        // digest is usage, so it is in neither count. The overview and both kinds of row
+        // must give the same totals.
+        let when = Local
+            .with_ymd_and_hms(2026, 3, 12, 9, 30, 0)
+            .single()
+            .unwrap();
+        let turn = |role: &str| MessageRecord {
+            session_id: "ses_gpt-5".to_string(),
+            role: Some(role.to_string()),
+            provider_id: Some("openai".to_string()),
+            model_id: Some("gpt-5".to_string()),
+            created_at: Some(when),
+        };
+        let data = AppData {
+            events: vec![event_with("gpt-5", "openai", Some(Decimal::ONE), 10)],
+            messages: vec![
+                turn("user"),
+                turn("assistant"),
+                turn("compaction"),
+                turn("user"),
+            ],
+            session_records: Vec::new(),
+            import_stats: ImportStats::default(),
+        };
+
+        let snapshot = build_snapshot(
+            &data,
+            &empty_catalog(),
+            TimeRange::All,
+            ZeroCostBehavior::KeepZero,
+        );
+
+        assert_eq!(snapshot.overview.messages, 3);
+        assert_eq!(snapshot.overview.prompts, 2);
+        assert_eq!(snapshot.models[0].messages, 3);
+        assert_eq!(snapshot.models[0].prompts, 2);
+        assert_eq!(snapshot.providers[0].messages, 3);
+        assert_eq!(snapshot.providers[0].prompts, 2);
+        assert_eq!(snapshot.sessions[0].messages, 3);
+        assert_eq!(snapshot.sessions[0].prompts, 2);
     }
 
     #[test]

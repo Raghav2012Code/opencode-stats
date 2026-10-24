@@ -310,7 +310,7 @@ impl App {
                         None => std::future::pending().await,
                     }
                 } => {
-                    self.reload();
+                    self.auto_reload();
                 }
                 _ = tick.tick() => {}
             }
@@ -390,9 +390,13 @@ impl App {
         }
     }
 
-    fn reload(&mut self) {
-        let result = load_app_data(&self.input_options);
-        self.apply_reload(result);
+    /// The `reload_every` timer's reload: the same background read as `R`, so the
+    /// interface never freezes. A tick that lands while a read is still running is
+    /// skipped quietly; the next tick catches up.
+    fn auto_reload(&mut self) {
+        if !self.reload_in_flight {
+            self.start_reload();
+        }
     }
 
     /// Applies a background reload's result and marks the reload done. The event loop
@@ -500,7 +504,7 @@ impl App {
         // because a clipped label reads as a missing range.
         if self.page.uses_range() {
             let ranges = [
-                (" All ", TimeRange::All),
+                ("All", TimeRange::All),
                 ("Today", TimeRange::Today),
                 ("7d", TimeRange::Last7Days),
                 ("30d", TimeRange::Last30Days),
@@ -1541,7 +1545,22 @@ mod tests {
         app.focused_index = 0;
         app.reload_every = Some(std::time::Duration::from_secs(60));
 
-        app.reload();
+        app.auto_reload();
+
+        // The timer reads in the background, like `R`, rather than blocking the loop.
+        assert!(app.reload_in_flight);
+        // A tick while that read is running starts nothing and says nothing.
+        app.auto_reload();
+        assert!(!frame_text(&app, 100, 24).contains("already in progress"));
+
+        // Without a runtime the read ran inline, so exactly one result is queued.
+        let result = app.reload_updates.try_recv().expect("a reload is queued");
+        assert!(
+            app.reload_updates.try_recv().is_err(),
+            "only one read started"
+        );
+        app.finish_background_reload(result);
+        assert!(!app.reload_in_flight);
 
         assert_eq!(app.page, Page::Models);
         assert_eq!(app.range, TimeRange::Last7Days);
