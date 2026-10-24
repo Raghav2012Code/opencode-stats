@@ -24,7 +24,8 @@ pub struct UsageRow {
     pub active_days: usize,
     pub cost: PriceSummary,
     pub percentage: f64,
-    pub p50_output_tokens_per_second: f64,
+    /// `None` when no event in the row has a measurable output rate.
+    pub p50_output_tokens_per_second: Option<f64>,
 }
 
 /// One aggregated usage row per session. Unlike [`UsageRow`] this carries the identity
@@ -530,17 +531,17 @@ struct UsageAccumulator {
     output_rates: Vec<f64>,
 }
 
-fn median(values: &[f64]) -> f64 {
+fn median(values: &[f64]) -> Option<f64> {
     if values.is_empty() {
-        return 0.0;
+        return None;
     }
     let mut values = values.to_vec();
     values.sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
     let middle = values.len() / 2;
     if values.len().is_multiple_of(2) {
-        (values[middle - 1] + values[middle]) / 2.0
+        Some((values[middle - 1] + values[middle]) / 2.0)
     } else {
-        values[middle]
+        Some(values[middle])
     }
 }
 

@@ -504,7 +504,7 @@ impl App {
         // because a clipped label reads as a missing range.
         if self.page.uses_range() {
             let ranges = [
-                (" All ", TimeRange::All),
+                ("All", TimeRange::All),
                 ("Today", TimeRange::Today),
                 ("7d", TimeRange::Last7Days),
                 ("30d", TimeRange::Last30Days),

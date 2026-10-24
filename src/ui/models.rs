@@ -390,7 +390,10 @@ fn render_detail(frame: &mut ratatui::Frame<'_>, area: Rect, row: &UsageRow, the
             ("Prompts: ", row.prompts.to_string()),
             (
                 "Rate: ",
-                format!("{:.2} tok/s", row.p50_output_tokens_per_second),
+                match row.p50_output_tokens_per_second {
+                    Some(rate) => format!("{rate:.2} tok/s"),
+                    None => "—".to_string(),
+                },
             ),
             ("Active days: ", row.active_days.to_string()),
         ],
@@ -588,7 +591,7 @@ mod tests {
             active_days: 1,
             cost: PriceSummary::default(),
             percentage: 100.0,
-            p50_output_tokens_per_second: 12.5,
+            p50_output_tokens_per_second: Some(12.5),
         }
     }
 
@@ -728,6 +731,16 @@ mod tests {
         ] {
             assert!(text.contains(expected), "missing {expected:?} in {text}");
         }
+    }
+
+    #[test]
+    fn a_row_with_no_measurable_rate_shows_a_dash_not_zero() {
+        let mut row = usage_row("gpt-5", 40);
+        row.p50_output_tokens_per_second = None;
+        let text = list_lines(&snapshot(vec![row], vec![]), false, 0, None, None).join("\n");
+
+        assert!(text.contains("Rate: —"), "{text}");
+        assert!(!text.contains("0.00 tok/s"), "{text}");
     }
 
     #[test]

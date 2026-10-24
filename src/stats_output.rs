@@ -274,7 +274,7 @@ mod tests {
             active_days: 1,
             cost: price(known),
             percentage: 75.0,
-            p50_output_tokens_per_second: 0.0,
+            p50_output_tokens_per_second: None,
         }
     }
 
