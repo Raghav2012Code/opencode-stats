@@ -10,7 +10,7 @@ use crate::analytics::AnalyticsSnapshot;
 use crate::analytics::model_stats::{SessionUsageRow, UsageRow, chart_with_focus};
 use crate::ui::theme::Theme;
 use crate::ui::widgets::common::{metric_line, truncate_label};
-use crate::ui::widgets::linechart::build_chart;
+use crate::ui::widgets::linechart::render_chart;
 use crate::utils::formatting::{format_price_summary, format_tokens};
 
 #[derive(Clone, Debug)]
@@ -182,7 +182,7 @@ pub fn render_models(
                 .and_then(|index| snapshot.models.get(index))
                 .map(ListRow::row_id);
             let chart = chart_with_focus(&snapshot.chart, focused_id);
-            frame.render_widget(build_chart(&chart, theme), body);
+            render_chart(frame, body, &chart, theme);
         },
         |frame, area, row| render_detail(frame, area, row, theme),
     );
@@ -416,7 +416,7 @@ pub fn render_providers(
                 .and_then(|index| snapshot.providers.get(index))
                 .map(ListRow::row_id);
             let chart = chart_with_focus(&snapshot.provider_chart, focused_id);
-            frame.render_widget(build_chart(&chart, theme), body);
+            render_chart(frame, body, &chart, theme);
         },
         |frame, area, row| render_detail(frame, area, row, theme),
     );
@@ -603,7 +603,6 @@ mod tests {
             x_bounds: [0.0, 1.0],
             y_bounds: [0.0, 1.0],
             x_labels: Vec::new(),
-            y_labels: Vec::new(),
             series: Vec::new(),
         }
     }

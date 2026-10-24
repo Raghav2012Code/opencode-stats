@@ -329,7 +329,6 @@ mod tests {
                 x_bounds: [0.0, 1.0],
                 y_bounds: [0.0, 1.0],
                 x_labels: Vec::new(),
-                y_labels: Vec::new(),
                 series: Vec::new(),
             },
             providers: vec![row(
@@ -341,7 +340,6 @@ mod tests {
                 x_bounds: [0.0, 1.0],
                 y_bounds: [0.0, 1.0],
                 x_labels: Vec::new(),
-                y_labels: Vec::new(),
                 series: Vec::new(),
             },
             sessions: Vec::new(),

@@ -64,12 +64,14 @@ pub struct ModelChartSeries {
     pub points: Vec<(f64, f64)>,
 }
 
+/// The chart's data. `x_labels[k]` names the point at fraction `k / (len - 1)` of the x
+/// axis, and `y_bounds[1]` is the largest value. The renderer draws both label rows, since
+/// their exact positions depend on the terminal size.
 #[derive(Clone, Debug)]
 pub struct ModelChartData {
     pub x_bounds: [f64; 2],
     pub y_bounds: [f64; 2],
     pub x_labels: Vec<String>,
-    pub y_labels: Vec<String>,
     pub series: Vec<ModelChartSeries>,
 }
 
@@ -328,7 +330,6 @@ pub fn chart_with_focus(chart: &ModelChartData, focused_model_id: Option<&str>) 
         x_bounds: chart.x_bounds,
         y_bounds: chart.y_bounds,
         x_labels: chart.x_labels.clone(),
-        y_labels: chart.y_labels.clone(),
         series,
     }
 }
@@ -376,7 +377,6 @@ where
             x_bounds: [0.0, 1.0],
             y_bounds: [0.0, 1.0],
             x_labels: vec!["Start".to_string(), "End".to_string()],
-            y_labels: vec!["0".to_string(), "1".to_string()],
             series: Vec::new(),
         };
     }
@@ -419,17 +419,11 @@ where
 
     let last_index = (days.len().saturating_sub(1)) as f64;
     let x_labels = build_x_labels(&days, range);
-    let (y_ticks, y_bounds) = nice_integer_ticks(y_max.max(1.0), 4);
-    let y_labels = y_ticks
-        .iter()
-        .map(|tick| format_tick_label(*tick))
-        .collect::<Vec<_>>();
 
     ModelChartData {
         x_bounds: [0.0, last_index.max(1.0)],
-        y_bounds,
+        y_bounds: [0.0, y_max.max(1.0)],
         x_labels,
-        y_labels,
         series,
     }
 }
@@ -482,16 +476,14 @@ fn build_x_labels(days: &[NaiveDate], range: TimeRange) -> Vec<String> {
     }
 }
 
-fn nice_integer_ticks(max_value: f64, desired_steps: usize) -> (Vec<f64>, [f64; 2]) {
-    let desired_steps = desired_steps.max(2);
-    let step = nice_step((max_value / desired_steps as f64).ceil().max(1.0));
-    let upper_bound = (max_value / step).ceil() * step;
-    let tick_count = (upper_bound / step).round() as usize;
-    let ticks = (0..=tick_count)
-        .map(|index| index as f64 * step)
-        .collect::<Vec<_>>();
-
-    (ticks, [0.0, upper_bound.max(1.0)])
+/// Ticks for a y axis of `intervals` equal steps from zero: a nice step, so the labels read
+/// as round numbers, and a top that is at least `max_value`. Returns the tick values and the
+/// top of the axis.
+pub fn y_axis_ticks(max_value: f64, intervals: usize) -> (Vec<f64>, f64) {
+    let intervals = intervals.max(1);
+    let step = nice_step((max_value.max(1.0) / intervals as f64).ceil().max(1.0));
+    let ticks = (0..=intervals).map(|index| index as f64 * step).collect();
+    (ticks, step * intervals as f64)
 }
 
 fn nice_step(rough_step: f64) -> f64 {
@@ -514,7 +506,7 @@ fn nice_step(rough_step: f64) -> f64 {
     (nice * magnitude).round()
 }
 
-fn format_tick_label(value: f64) -> String {
+pub fn format_tick_label(value: f64) -> String {
     if value >= 1_000_000_000.0 {
         format!("{:.0}B", value / 1_000_000_000.0)
     } else if value >= 1_000_000.0 {
