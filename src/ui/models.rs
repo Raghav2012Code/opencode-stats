@@ -9,7 +9,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::analytics::AnalyticsSnapshot;
 use crate::analytics::model_stats::{SessionUsageRow, UsageRow, chart_with_focus};
 use crate::ui::theme::Theme;
-use crate::ui::widgets::common::{metric_line, truncate_label};
+use crate::ui::widgets::common::{metric_line_within, truncate_label, two_columns};
 use crate::ui::widgets::linechart::render_chart;
 use crate::utils::formatting::{format_price_summary, format_tokens};
 
@@ -357,12 +357,19 @@ pub(crate) fn render_metric_grid(
     pairs: &[(&str, String)],
     theme: &Theme,
 ) {
-    let cells = layout_rows::<5, 2>(area);
+    // Five rows of two columns: pairs fill the left column of each row, then the right.
+    let rows = Layout::vertical([Constraint::Length(1); 5]).areas::<5>(area);
 
-    for (index, (label, value)) in pairs.iter().take(cells.len() * cells[0].len()).enumerate() {
-        let cell = cells[index / cells[0].len()][index % cells[0].len()];
+    for (index, (label, value)) in pairs.iter().take(rows.len() * 2).enumerate() {
+        let [left, right] = two_columns(rows[index / 2]);
+        let cell = if index % 2 == 0 { left } else { right };
         frame.render_widget(
-            Paragraph::new(metric_line(label, value.clone(), theme)),
+            Paragraph::new(metric_line_within(
+                label,
+                value.clone(),
+                cell.width as usize,
+                theme,
+            )),
             cell,
         );
     }
@@ -557,19 +564,6 @@ fn render_search_overlay<R: ListRow>(
 /// rows so the page answers its question at a glance; the detail panel below shows
 /// the focused session. There is no chart: with hundreds of sessions a per-session
 /// series would be noise.
-fn layout_rows<const ROW: usize, const COL: usize>(area: Rect) -> [[Rect; COL]; ROW] {
-    Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1); ROW])
-        .areas::<ROW>(area)
-        .map(|line| {
-            Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Fill(1); COL])
-                .areas::<COL>(line)
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::{render_models, render_providers};

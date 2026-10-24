@@ -6,7 +6,7 @@ use crate::analytics::AnalyticsSnapshot;
 use crate::analytics::BudgetState;
 use crate::config::app_config::Brand;
 use crate::ui::theme::Theme;
-use crate::ui::widgets::common::metric_line;
+use crate::ui::widgets::common::{metric_line_within, two_columns};
 use crate::ui::widgets::heatmap::HeatmapWidget;
 use crate::utils::formatting::{format_price_summary, format_tokens, format_usd_precise};
 
@@ -69,62 +69,84 @@ pub fn render_overview(
     };
     frame.render_widget(Paragraph::new(header), favorite);
 
-    let [left, right] = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .areas(stats);
+    let [left, right] = two_columns(stats);
+    let (left_width, right_width) = (left.width as usize, right.width as usize);
 
     let left_text = Text::from(vec![
-        metric_line(
+        metric_line_within(
             "Total tokens: ",
             format_tokens(snapshot.overview.total_tokens),
+            left_width,
             theme,
         ),
-        metric_line(
+        metric_line_within(
             "Input: ",
             format_tokens(snapshot.overview.input_tokens),
+            left_width,
             theme,
         ),
-        metric_line(
+        metric_line_within(
             "Output: ",
             format_tokens(snapshot.overview.output_tokens),
+            left_width,
             theme,
         ),
-        metric_line(
+        metric_line_within(
             "Cache: ",
             format_tokens(snapshot.overview.cache_tokens),
+            left_width,
             theme,
         ),
-        metric_line(
+        metric_line_within(
             "Models used: ",
             snapshot.overview.models_used.to_string(),
+            left_width,
             theme,
         ),
-        metric_line(
+        metric_line_within(
             "Active days: ",
             snapshot.overview.active_days.to_string(),
+            left_width,
             theme,
         ),
     ]);
     frame.render_widget(Paragraph::new(left_text), left);
 
     let right_text = Text::from(vec![
-        metric_line(
+        metric_line_within(
             "Total cost: ",
             format_price_summary(&snapshot.overview.total_cost),
+            right_width,
             theme,
         ),
-        metric_line("Sessions: ", snapshot.overview.sessions.to_string(), theme),
-        metric_line("Messages: ", snapshot.overview.messages.to_string(), theme),
-        metric_line("Prompts: ", snapshot.overview.prompts.to_string(), theme),
-        metric_line(
+        metric_line_within(
+            "Sessions: ",
+            snapshot.overview.sessions.to_string(),
+            right_width,
+            theme,
+        ),
+        metric_line_within(
+            "Messages: ",
+            snapshot.overview.messages.to_string(),
+            right_width,
+            theme,
+        ),
+        metric_line_within(
+            "Prompts: ",
+            snapshot.overview.prompts.to_string(),
+            right_width,
+            theme,
+        ),
+        metric_line_within(
             "Current streak: ",
             snapshot.overview.current_streak.to_string(),
+            right_width,
             theme,
         ),
-        metric_line(
+        metric_line_within(
             "Longest streak: ",
             snapshot.overview.longest_streak.to_string(),
+            right_width,
             theme,
         ),
     ]);
