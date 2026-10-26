@@ -316,6 +316,7 @@ mod tests {
                 prompts: 2,
                 models_used: 1,
                 active_days: 1,
+                active_days_span: 1,
                 current_streak: 1,
                 longest_streak: 1,
                 fun_comparison: String::new(),

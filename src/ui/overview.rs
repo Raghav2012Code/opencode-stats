@@ -10,6 +10,16 @@ use crate::ui::widgets::common::{metric_line_within, two_columns};
 use crate::ui::widgets::heatmap::HeatmapWidget;
 use crate::utils::formatting::{format_price_summary, format_tokens, format_usd_precise};
 
+/// `57/94`: active days out of the days since first use, or the bare count when the
+/// span is unknown.
+fn active_days_value(active_days: usize, span: usize) -> String {
+    if span > 0 {
+        format!("{active_days}/{span}")
+    } else {
+        active_days.to_string()
+    }
+}
+
 pub fn render_overview(
     frame: &mut ratatui::Frame<'_>,
     area: Rect,
@@ -105,7 +115,10 @@ pub fn render_overview(
         ),
         metric_line_within(
             "Active days: ",
-            snapshot.overview.active_days.to_string(),
+            active_days_value(
+                snapshot.overview.active_days,
+                snapshot.overview.active_days_span,
+            ),
             left_width,
             theme,
         ),
@@ -271,6 +284,7 @@ mod tests {
                 prompts: 0,
                 models_used: 0,
                 active_days: 7,
+                active_days_span: 0,
                 current_streak: 2,
                 longest_streak: 5,
                 fun_comparison: String::new(),
@@ -323,5 +337,13 @@ mod tests {
         for expected in ["Active days: 7", "Current streak: 2", "Longest streak: 5"] {
             assert!(text.contains(expected), "missing {expected:?} in {text}");
         }
+    }
+
+    #[test]
+    fn active_days_read_as_a_share_of_the_days_since_first_use() {
+        assert_eq!(super::active_days_value(57, 94), "57/94");
+        // No usage means no span: the bare count, never a misleading "0/0".
+        assert_eq!(super::active_days_value(57, 0), "57");
+        assert_eq!(super::active_days_value(0, 0), "0");
     }
 }

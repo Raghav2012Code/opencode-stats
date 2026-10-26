@@ -10,6 +10,7 @@ Data flow: `db::queries::load_app_data` → `analytics::build_snapshot` → `ui:
 
 - Usage counts `assistant` and `compaction` messages (both are billed model calls)
 - Messages count `user` and `assistant` turns; prompts count `user` turns. `compaction` is usage only, never a message or a prompt
+- A turn with no model/provider attached counts toward its session's dominant model/provider; turns in sessions without usage stay overview- and sessions-only
 - Free models are never filtered out: a model that cost nothing is still a row, and its tokens count towards every total
 - Default database paths, checked in this order: `~/.local/share/opencode/opencode.db` (every platform), then on Windows `%LOCALAPPDATA%\opencode\opencode.db` and `%APPDATA%\opencode\opencode.db`, on macOS `~/Library/Application Support/opencode/opencode.db`
 

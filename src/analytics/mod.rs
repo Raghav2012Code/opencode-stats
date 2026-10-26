@@ -33,6 +33,9 @@ pub struct OverviewStats {
     pub prompts: usize,
     pub models_used: usize,
     pub active_days: usize,
+    /// Days from the first use (or the range start, whichever is later) through today,
+    /// inclusive; `0` when there is no usage. Active days read as a share of this.
+    pub active_days_span: usize,
     pub current_streak: usize,
     pub longest_streak: usize,
     pub fun_comparison: String,
@@ -82,14 +85,9 @@ pub fn build_snapshot_view(
         filtered_events.retain(|event| allowed.contains(event.session_id.as_str()));
         filtered_messages.retain(|message| allowed.contains(message.session_id.as_str()));
     }
-    let filtered_model_messages = filtered_messages
-        .iter()
-        .copied()
-        .filter(|message| message.model_id.is_some())
-        .collect::<Vec<_>>();
     let (models, chart) = build_model_chart(
         &filtered_events,
-        &filtered_model_messages,
+        &filtered_messages,
         pricing,
         range,
         today,
@@ -97,7 +95,7 @@ pub fn build_snapshot_view(
     );
     let (providers, provider_chart) = build_provider_chart(
         &filtered_events,
-        &filtered_model_messages,
+        &filtered_messages,
         pricing,
         range,
         today,
@@ -126,7 +124,9 @@ pub fn build_snapshot_view(
         session_ids.retain(|id| allowed.contains(id));
     }
     // The same messages the list pages count: dated in the range and inside the view, so
-    // the overview's totals equal the sums over the model and session rows. Compaction
+    // the overview's totals equal the sums over the model, provider and session rows. A
+    // turn with no model or provider attached counts toward its session's dominant row;
+    // only turns in sessions without usage stay overview- and sessions-only. Compaction
     // digests are usage, not conversation, and are not counted here.
     let messages = filtered_messages
         .iter()
@@ -147,6 +147,26 @@ pub fn build_snapshot_view(
         .filter_map(|event| event.activity_date())
         .collect::<BTreeSet<_>>();
     let active_days = active_day_set.len();
+    // The denominator of the active-days figure: every day since the first use in this
+    // view, up to today, and no more than the selected range covers, so a 7d view reads
+    // "5/7" rather than "5/168".
+    let first_use = data
+        .events
+        .iter()
+        .filter(|event| {
+            project_sessions
+                .as_ref()
+                .is_none_or(|allowed| allowed.contains(event.session_id.as_str()))
+        })
+        .filter_map(|event| event.activity_date())
+        .min();
+    let active_days_span = match (first_use, range.start_date(today)) {
+        (Some(first), Some(start)) => Some(first.max(start)),
+        (Some(first), None) => Some(first),
+        (None, _) => None,
+    }
+    .map(|start| (today - start).num_days().max(0) as usize + 1)
+    .unwrap_or(0);
     let overall_streaks = streaks(&active_day_set, today);
 
     let mut snapshot = AnalyticsSnapshot {
@@ -161,6 +181,7 @@ pub fn build_snapshot_view(
             prompts,
             models_used,
             active_days,
+            active_days_span,
             current_streak: overall_streaks.current,
             longest_streak: overall_streaks.longest,
             fun_comparison: crate::utils::formatting::tokens_comparison_text(
@@ -508,6 +529,15 @@ mod tests {
                 turn("assistant"),
                 turn("compaction"),
                 turn("user"),
+                // A modern user turn carries no model or provider: it still counts,
+                // toward its session's dominant row.
+                MessageRecord {
+                    session_id: "ses_gpt-5".to_string(),
+                    role: Some("user".to_string()),
+                    provider_id: None,
+                    model_id: None,
+                    created_at: Some(when),
+                },
             ],
             session_records: Vec::new(),
             import_stats: ImportStats::default(),
@@ -520,14 +550,87 @@ mod tests {
             ZeroCostBehavior::KeepZero,
         );
 
-        assert_eq!(snapshot.overview.messages, 3);
-        assert_eq!(snapshot.overview.prompts, 2);
-        assert_eq!(snapshot.models[0].messages, 3);
-        assert_eq!(snapshot.models[0].prompts, 2);
-        assert_eq!(snapshot.providers[0].messages, 3);
-        assert_eq!(snapshot.providers[0].prompts, 2);
-        assert_eq!(snapshot.sessions[0].messages, 3);
-        assert_eq!(snapshot.sessions[0].prompts, 2);
+        assert_eq!(snapshot.overview.messages, 4);
+        assert_eq!(snapshot.overview.prompts, 3);
+        assert_eq!(snapshot.models[0].messages, 4);
+        assert_eq!(snapshot.models[0].prompts, 3);
+        assert_eq!(snapshot.providers[0].messages, 4);
+        assert_eq!(snapshot.providers[0].prompts, 3);
+        assert_eq!(snapshot.sessions[0].messages, 4);
+        assert_eq!(snapshot.sessions[0].prompts, 3);
+    }
+
+    #[test]
+    fn active_days_span_from_first_use_and_stop_at_the_range() {
+        // Active days read as a share of the days available: the whole span since first
+        // use for "all", and the selected range when that is shorter.
+        let today = current_local_date();
+        let event_on = |days_ago: i64| {
+            let when = (today - chrono::Duration::days(days_ago))
+                .and_hms_opt(9, 0, 0)
+                .unwrap()
+                .and_local_timezone(Local)
+                .unwrap();
+            UsageEvent {
+                session_id: "ses_span".to_string(),
+                parent_session_id: None,
+                session_title: None,
+                session_started_at: Some(when),
+                session_archived_at: None,
+                project_name: None,
+                project_path: None,
+                provider_id: Some("openai".to_string()),
+                model_id: "gpt-5".to_string(),
+                agent: None,
+                finish_reason: None,
+                tokens: TokenUsage {
+                    input: 1,
+                    output: 1,
+                    cache_read: 0,
+                    cache_write: 0,
+                },
+                created_at: Some(when),
+                completed_at: Some(when),
+                stored_cost_usd: None,
+            }
+        };
+        let data = AppData {
+            events: vec![event_on(9), event_on(0)],
+            messages: Vec::new(),
+            session_records: Vec::new(),
+            import_stats: ImportStats::default(),
+        };
+
+        let all = build_snapshot(
+            &data,
+            &empty_catalog(),
+            TimeRange::All,
+            ZeroCostBehavior::KeepZero,
+        );
+        assert_eq!(all.overview.active_days, 2);
+        assert_eq!(all.overview.active_days_span, 10);
+
+        let week = build_snapshot(
+            &data,
+            &empty_catalog(),
+            TimeRange::Last7Days,
+            ZeroCostBehavior::KeepZero,
+        );
+        assert_eq!(week.overview.active_days, 1);
+        assert_eq!(week.overview.active_days_span, 7);
+
+        let empty = build_snapshot(
+            &AppData {
+                events: Vec::new(),
+                messages: Vec::new(),
+                session_records: Vec::new(),
+                import_stats: ImportStats::default(),
+            },
+            &empty_catalog(),
+            TimeRange::All,
+            ZeroCostBehavior::KeepZero,
+        );
+        assert_eq!(empty.overview.active_days_span, 0);
     }
 
     #[test]

@@ -135,7 +135,9 @@ fn model_message_key(message: &MessageRecord) -> Option<String> {
 }
 
 fn provider_message_key(message: &MessageRecord) -> Option<String> {
-    Some(provider_label(message.provider_id.as_deref()))
+    // Absent providers fall back to the session's dominant provider in
+    // [`build_rows`]; only events without a provider make an "unknown" row.
+    message.provider_id.clone()
 }
 
 fn build_rows(
@@ -148,9 +150,40 @@ fn build_rows(
 ) -> Vec<UsageRow> {
     let mut grouped = BTreeMap::<String, UsageAccumulator>::new();
 
+    // A turn with no key attached (modern user turns carry neither model nor provider)
+    // belongs to its session's dominant key, so the rows still sum to the overview.
+    // A session with no events has no dominant key, and its turns stay out.
+    let mut session_tokens = BTreeMap::<&str, BTreeMap<String, u64>>::new();
+    for event in events {
+        let total = session_tokens
+            .entry(event.session_id.as_str())
+            .or_default()
+            .entry(event_key(event))
+            .or_default();
+        *total = total.saturating_add(event.tokens.total());
+    }
+    let session_dominant = session_tokens
+        .into_iter()
+        .filter_map(|(session, totals)| {
+            // Strictly greater keeps the first key, so ties break toward the
+            // smallest key in this function's `BTreeMap` order.
+            let mut best: Option<(String, u64)> = None;
+            for (key, total) in totals {
+                if best.as_ref().is_none_or(|(_, kept)| total > *kept) {
+                    best = Some((key, total));
+                }
+            }
+            best.map(|(key, _)| (session, key))
+        })
+        .collect::<BTreeMap<_, _>>();
+
     for message in messages {
-        let Some(key) = message_key(message) else {
-            continue;
+        let key = match message_key(message) {
+            Some(key) => key,
+            None => match session_dominant.get(message.session_id.as_str()) {
+                Some(key) => key.clone(),
+                None => continue,
+            },
         };
         let entry = grouped.entry(key).or_default();
         match message.role.as_deref() {
@@ -641,6 +674,133 @@ mod tests {
         assert_eq!(model_chart.series[0].model_id, "gpt-5");
         assert_eq!(provider_chart.series.len(), 1);
         assert_eq!(provider_chart.series[0].model_id, "openai");
+    }
+
+    fn orphan_user_turn(session_id: &str) -> MessageRecord {
+        // A modern user turn: neither model nor provider attached.
+        MessageRecord {
+            session_id: session_id.to_string(),
+            role: Some("user".to_string()),
+            provider_id: None,
+            model_id: None,
+            created_at: None,
+        }
+    }
+
+    #[test]
+    fn a_turn_without_a_model_counts_toward_its_sessions_dominant_row() {
+        let event = usage_event("openai", "gpt-5", 12);
+        let assistant = MessageRecord {
+            session_id: "ses_1".to_string(),
+            role: Some("assistant".to_string()),
+            provider_id: Some("openai".to_string()),
+            model_id: Some("gpt-5".to_string()),
+            created_at: event.created_at,
+        };
+        let orphan = orphan_user_turn("ses_1");
+        let borrowed_events = [&event];
+        let borrowed_messages = [&assistant, &orphan];
+        let today = NaiveDate::from_ymd_opt(2026, 3, 12).unwrap();
+        let pricing = empty_pricing();
+
+        let (model_rows, _) = build_model_chart(
+            &borrowed_events,
+            &borrowed_messages,
+            &pricing,
+            TimeRange::All,
+            today,
+            ZeroCostBehavior::KeepZero,
+        );
+        let (provider_rows, _) = build_provider_chart(
+            &borrowed_events,
+            &borrowed_messages,
+            &pricing,
+            TimeRange::All,
+            today,
+            ZeroCostBehavior::KeepZero,
+        );
+
+        assert_eq!(model_rows.len(), 1);
+        assert_eq!(model_rows[0].messages, 2);
+        assert_eq!(model_rows[0].prompts, 1);
+        assert_eq!(provider_rows.len(), 1);
+        assert_eq!(provider_rows[0].id, "openai");
+        assert_eq!(provider_rows[0].messages, 2);
+        assert_eq!(provider_rows[0].prompts, 1);
+    }
+
+    #[test]
+    fn an_orphan_turn_follows_the_token_dominant_model() {
+        let small = usage_event("openai", "aaa-model", 12);
+        let big_base = usage_event("openai", "zzz-model", 12);
+        let big = UsageEvent {
+            tokens: TokenUsage {
+                input: 100,
+                output: 200,
+                cache_read: 0,
+                cache_write: 0,
+            },
+            ..big_base
+        };
+        let orphan = orphan_user_turn("ses_1");
+        let borrowed_events = [&small, &big];
+        let borrowed_messages = [&orphan];
+
+        let (rows, _) = build_model_chart(
+            &borrowed_events,
+            &borrowed_messages,
+            &empty_pricing(),
+            TimeRange::All,
+            NaiveDate::from_ymd_opt(2026, 3, 12).unwrap(),
+            ZeroCostBehavior::KeepZero,
+        );
+
+        assert_eq!(rows.len(), 2);
+        let big_row = rows.iter().find(|row| row.id == "zzz-model").unwrap();
+        assert_eq!((big_row.messages, big_row.prompts), (1, 1));
+        let small_row = rows.iter().find(|row| row.id == "aaa-model").unwrap();
+        assert_eq!((small_row.messages, small_row.prompts), (0, 0));
+    }
+
+    #[test]
+    fn equal_tokens_break_toward_the_smallest_key() {
+        // Both carry the same tokens (input 1, output 2), so the orphan lands on
+        // the smallest key.
+        let first = usage_event("openai", "aaa-model", 12);
+        let second = usage_event("openai", "zzz-model", 12);
+        let orphan = orphan_user_turn("ses_1");
+        let borrowed_events = [&first, &second];
+        let borrowed_messages = [&orphan];
+
+        let (rows, _) = build_model_chart(
+            &borrowed_events,
+            &borrowed_messages,
+            &empty_pricing(),
+            TimeRange::All,
+            NaiveDate::from_ymd_opt(2026, 3, 12).unwrap(),
+            ZeroCostBehavior::KeepZero,
+        );
+
+        let first_row = rows.iter().find(|row| row.id == "aaa-model").unwrap();
+        assert_eq!((first_row.messages, first_row.prompts), (1, 1));
+    }
+
+    #[test]
+    fn turns_in_a_session_without_usage_stay_out_of_the_model_rows() {
+        let orphan = orphan_user_turn("ses_quiet");
+        let borrowed_messages = [&orphan];
+        let no_events: Vec<&UsageEvent> = Vec::new();
+
+        let (model_rows, _) = build_model_chart(
+            &no_events,
+            &borrowed_messages,
+            &empty_pricing(),
+            TimeRange::All,
+            NaiveDate::from_ymd_opt(2026, 3, 12).unwrap(),
+            ZeroCostBehavior::KeepZero,
+        );
+
+        assert!(model_rows.is_empty());
     }
 
     fn session_event(
