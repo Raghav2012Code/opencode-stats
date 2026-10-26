@@ -33,7 +33,7 @@ This repository is **my personal fork** of [Cateds/opencode-stats](https://githu
 
 **A heatmap that reads**
 
-- Six-level colour ramp derived from the active theme, with a legend to match.
+- Five-level colour ramp derived from the active theme, with a legend to match.
 - Buckets by activity percentiles instead of fractions of the busiest day, so one heavy day cannot flatten a year of usage into the lowest shade.
 
 **Scriptable output**

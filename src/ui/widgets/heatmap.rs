@@ -9,9 +9,8 @@ use crate::ui::theme::Theme;
 
 /// One glyph per level, from no usage to the busiest day. The ink grows with the level,
 /// so the ramp still reads when the colours are close together.
-/// Every glyph fills its whole cell, so neighbouring cells join without gaps or
-/// ragged edges and an active stretch reads as one solid block.
-const LEVEL_GLYPHS: [char; HEAT_LEVELS] = ['·', '░', '▒', '▓', '▉', '█'];
+/// Every glyph fills its whole cell, so neighbouring cells join into one solid block.
+const LEVEL_GLYPHS: [char; HEAT_LEVELS] = ['·', '░', '▒', '▓', '█'];
 
 pub struct HeatmapWidget<'a> {
     pub data: &'a HeatmapData,
@@ -190,7 +189,7 @@ mod tests {
         }
         for x in 0..40u16 {
             if let Some(cell) = buffer.cell((x, 9))
-                && matches!(cell.symbol(), "·" | "░" | "▒" | "▓" | "▉" | "█")
+                && matches!(cell.symbol(), "·" | "░" | "▒" | "▓" | "█")
             {
                 legend.push(cell.fg);
             }
@@ -299,7 +298,7 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let mut weeks = (0..20).map(|_| quiet()).collect::<Vec<_>>();
-        weeks[19][0].intensity = 5;
+        weeks[19][0].intensity = 4;
         let data = HeatmapData {
             weeks,
             month_labels: Vec::new(),
@@ -387,8 +386,7 @@ mod tests {
                 '░' => 1,
                 '▒' => 2,
                 '▓' => 3,
-                '▉' => 4,
-                '█' => 5,
+                '█' => 4,
                 other => panic!("unexpected level glyph {other:?}"),
             })
             .collect();
@@ -401,10 +399,9 @@ mod tests {
 
     #[test]
     fn an_all_levels_row_occupies_exactly_one_cell_per_week() {
-        // Every level glyph is one column wide: a row of all six levels takes the
-        // label plus six cells, with nothing wrapping onto the next line and no
-        // column pushed out of place. Lower blocks join raggedly and ambiguous
-        // widths stagger the grid on CJK-font terminals, which is what this pins.
+        // Every level glyph is one column wide: a row of all five levels takes the
+        // label plus five cells, with nothing wrapping onto the next line and no
+        // column pushed out of place.
         let theme = Theme::builtin_dark();
         let data = data_with_every_level();
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();

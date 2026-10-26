@@ -44,7 +44,7 @@ pub struct Theme {
     pub tab_active_fg: Color,
     pub tab_active_bg: Color,
     pub heat_0: Color,
-    pub heat_5: Color,
+    pub heat_4: Color,
     pub model_series: [Color; 12],
 }
 
@@ -61,7 +61,7 @@ impl Theme {
             tab_active_fg: Color::Black,
             tab_active_bg: Color::Rgb(136, 192, 208),
             heat_0: Color::Rgb(94, 98, 115),
-            heat_5: Color::Rgb(136, 192, 208),
+            heat_4: Color::Rgb(136, 192, 208),
             model_series: [
                 Color::Rgb(191, 97, 106),
                 Color::Rgb(208, 135, 112),
@@ -91,7 +91,7 @@ impl Theme {
             tab_active_fg: Color::White,
             tab_active_bg: Color::Rgb(0, 122, 163),
             heat_0: Color::Rgb(160, 170, 186),
-            heat_5: Color::Rgb(0, 122, 163),
+            heat_4: Color::Rgb(0, 122, 163),
             model_series: [
                 Color::Rgb(167, 40, 40),
                 Color::Rgb(175, 94, 0),
@@ -143,8 +143,8 @@ impl Theme {
         let top = (HEAT_LEVELS - 1) as u8;
         match level {
             0 => self.heat_0,
-            level if level >= top => self.heat_5,
-            level => lerp_color(self.heat_0, self.heat_5, f32::from(level) / f32::from(top)),
+            level if level >= top => self.heat_4,
+            level => lerp_color(self.heat_0, self.heat_4, f32::from(level) / f32::from(top)),
         }
     }
 }
@@ -279,7 +279,7 @@ mod tests {
             }
 
             assert_eq!(levels[0], theme.heat_0);
-            assert_eq!(levels[HEAT_LEVELS - 1], theme.heat_5);
+            assert_eq!(levels[HEAT_LEVELS - 1], theme.heat_4);
         }
     }
 

@@ -15,8 +15,8 @@ pub struct HeatmapData {
     pub month_labels: Vec<(usize, String)>,
 }
 
-/// How many levels the heatmap has: no usage, then five shades of activity.
-pub const HEAT_LEVELS: usize = 6;
+/// How many levels the heatmap has: no usage, then four shades of activity.
+pub const HEAT_LEVELS: usize = 5;
 
 /// How far back the map reaches when the range is "all time".
 const ALL_TIME_DAYS: i64 = 364;
@@ -100,7 +100,7 @@ fn intensity_thresholds(active: impl Iterator<Item = u64>) -> [u64; HEAT_LEVELS 
         values[rank - 1]
     };
 
-    // One edge fewer than the buckets: four edges make five buckets, one per quintile
+    // One edge fewer than the buckets: three edges make four buckets, one per quartile
     // of the active days.
     let buckets = HEAT_LEVELS - 1;
     let mut edges = [0u64; HEAT_LEVELS - 2];
@@ -271,14 +271,14 @@ mod tests {
     }
 
     #[test]
-    fn thresholds_are_the_nearest_rank_quintiles() {
+    fn thresholds_are_the_nearest_rank_quartiles() {
         let series = (1..=100u64).collect::<Vec<_>>();
-        assert_eq!(thresholds(&series), [20, 40, 60, 80]);
+        assert_eq!(thresholds(&series), [25, 50, 75]);
     }
 
     #[test]
     fn maps_levels_from_the_thresholds() {
-        let edges = [10, 30, 50, 70];
+        let edges = [10, 30, 70];
 
         assert_eq!(map_intensity(0, &edges), 0);
         assert_eq!(map_intensity(5, &edges), 1);
@@ -286,24 +286,24 @@ mod tests {
         assert_eq!(map_intensity(11, &edges), 2);
         assert_eq!(map_intensity(30, &edges), 2);
         assert_eq!(map_intensity(50, &edges), 3);
-        assert_eq!(map_intensity(70, &edges), 4);
-        assert_eq!(map_intensity(71, &edges), 5);
+        assert_eq!(map_intensity(70, &edges), 3);
+        assert_eq!(map_intensity(71, &edges), 4);
     }
 
     #[test]
     fn tied_days_share_a_bucket() {
-        assert_eq!(thresholds(&[7, 7, 7, 7]), [7, 7, 7, 7]);
-        assert_eq!(map_intensity(7, &[7, 7, 7, 7]), 1);
+        assert_eq!(thresholds(&[7, 7, 7, 7]), [7, 7, 7]);
+        assert_eq!(map_intensity(7, &[7, 7, 7]), 1);
     }
 
     #[test]
     fn sparse_windows_are_handled() {
-        assert_eq!(thresholds(&[]), [0, 0, 0, 0]);
-        assert_eq!(thresholds(&[5]), [5, 5, 5, 5]);
-        assert_eq!(thresholds(&[5, 9]), [5, 5, 9, 9]);
+        assert_eq!(thresholds(&[]), [0, 0, 0]);
+        assert_eq!(thresholds(&[5]), [5, 5, 5]);
+        assert_eq!(thresholds(&[5, 9]), [5, 5, 9]);
 
-        assert_eq!(map_intensity(5, &[5, 5, 5, 5]), 1);
-        assert_eq!(map_intensity(9, &[5, 5, 9, 9]), 3);
+        assert_eq!(map_intensity(5, &[5, 5, 5]), 1);
+        assert_eq!(map_intensity(9, &[5, 5, 9]), 3);
     }
 
     #[test]
@@ -322,7 +322,7 @@ mod tests {
             );
         }
         assert!(
-            counts[1] <= series.len() / 5 + 1,
+            counts[1] <= series.len() / 4 + 1,
             "the lowest level must not hold most active days, got {counts:?}"
         );
     }
@@ -414,6 +414,6 @@ mod tests {
     fn an_empty_range_renders_as_empty() {
         let data = build_heatmap_data(&[], TimeRange::Last7Days, today());
 
-        assert_eq!(level_counts(&data), [14, 0, 0, 0, 0, 0]);
+        assert_eq!(level_counts(&data), [14, 0, 0, 0, 0]);
     }
 }
