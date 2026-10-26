@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use std::io::stdout;
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Local, NaiveDate};
 use color_eyre::eyre::Result;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::style::{StyledContent, Stylize};
@@ -31,7 +32,7 @@ use crate::ui::theme::{Theme, ThemeKind};
 use crate::ui::widgets::common::{CONTENT_WIDTH, left_aligned_content, segment_span};
 use crate::utils::formatting::format_price_summary;
 use crate::utils::pricing::ZeroCostBehavior;
-use crate::utils::time::TimeRange;
+use crate::utils::time::{TimeRange, current_local_date};
 
 const VIEWPORT_HEIGHT: u16 = 23;
 const STATUS_TTL: Duration = Duration::from_secs(3);
@@ -121,10 +122,18 @@ impl Page {
     }
 }
 
+/// The exact inputs a snapshot was built from: range, day, view and pricing behavior.
+/// Same key, same snapshot — the builder is pure over these.
+type SnapshotKey = (TimeRange, NaiveDate, View, ZeroCostBehavior);
+
 pub struct App {
     pub data: AppData,
     pub pricing: PricingCatalog,
     pub snapshot: AnalyticsSnapshot,
+    /// Snapshots by the exact inputs that built them: revisiting a range is a lookup,
+    /// not a rebuild. Cleared whenever the data or pricing changes, and keyed by day
+    /// so a midnight rollover rebuilds once.
+    snapshot_cache: HashMap<SnapshotKey, AnalyticsSnapshot>,
     pub page: Page,
     pub range: TimeRange,
     pub theme: Theme,
@@ -170,6 +179,12 @@ impl App {
         } else {
             TimeRange::All
         };
+        let initial_key = (
+            initial_range,
+            current_local_date(),
+            view.clone(),
+            zero_cost_behavior,
+        );
         let snapshot = build_snapshot_view(
             &data,
             &pricing,
@@ -177,6 +192,7 @@ impl App {
             zero_cost_behavior,
             view.clone(),
         );
+        let snapshot_cache = HashMap::from([(initial_key, snapshot.clone())]);
         let (sender, receiver) = mpsc::unbounded_channel();
         let (clipboard_sender, clipboard_updates) = mpsc::unbounded_channel();
         let (reload_sender, reload_updates) = mpsc::unbounded_channel();
@@ -189,6 +205,7 @@ impl App {
             data,
             pricing,
             snapshot,
+            snapshot_cache,
             page,
             range,
             theme,
@@ -212,7 +229,7 @@ impl App {
             reload_updates,
             reload_in_flight: false,
         };
-        app.refresh_budget();
+        app.refresh_budget(current_local_date());
 
         let notices = [
             app.data.import_stats.summary(),
@@ -284,6 +301,8 @@ impl App {
                 Some(pricing) = self.pricing_updates.recv() => {
                     if let Ok(pricing) = pricing {
                         self.pricing = pricing;
+                        // New prices invalidate every cached range.
+                        self.snapshot_cache.clear();
                         self.recompute();
                         self.set_status("Pricing cache refreshed from models.dev");
                     } else {
@@ -319,28 +338,41 @@ impl App {
     }
 
     fn recompute(&mut self) {
-        self.snapshot = crate::analytics::build_snapshot_view(
-            &self.data,
-            &self.pricing,
-            self.effective_range(),
-            self.zero_cost_behavior,
-            self.view.clone(),
-        );
-        self.refresh_budget();
+        let today = current_local_date();
+        self.snapshot = self.cached_snapshot(self.effective_range(), today).clone();
+        self.refresh_budget(today);
     }
 
-    /// What the last 30 days cost, against the configured cap. Recomputed with the
-    /// snapshot because both answer the same data, and the budget ignores the range the
-    /// pages are showing.
-    fn refresh_budget(&mut self) {
-        self.budget = self.budget_cap.map(|cap| BudgetState {
-            cap,
-            spend: crate::analytics::budget_spend(
-                &self.data.events,
+    /// The snapshot for `range`, built once and then served from the cache: range and
+    /// page navigation revisit the same few keys instead of re-aggregating.
+    fn cached_snapshot(&mut self, range: TimeRange, today: NaiveDate) -> &AnalyticsSnapshot {
+        let key: SnapshotKey = (range, today, self.view.clone(), self.zero_cost_behavior);
+        if !self.snapshot_cache.contains_key(&key) {
+            let snapshot = build_snapshot_view(
+                &self.data,
                 &self.pricing,
+                range,
                 self.zero_cost_behavior,
-                crate::utils::time::current_local_date(),
-            ),
+                self.view.clone(),
+            );
+            self.snapshot_cache.insert(key.clone(), snapshot);
+        }
+        self.snapshot_cache
+            .get(&key)
+            .expect("snapshot just built for its key")
+    }
+
+    /// What the last 30 days cost, against the configured cap. Taken from the cached
+    /// 30-day snapshot's own total, so the budget and the overview can never disagree;
+    /// the pages' range plays no part. No cap means no 30-day build.
+    fn refresh_budget(&mut self, today: NaiveDate) {
+        self.budget = self.budget_cap.map(|cap| {
+            let spend = self
+                .cached_snapshot(crate::analytics::BUDGET_WINDOW, today)
+                .overview
+                .total_cost
+                .clone();
+            BudgetState { cap, spend }
         });
     }
 
@@ -352,6 +384,11 @@ impl App {
         } else {
             TimeRange::All
         }
+    }
+
+    #[cfg(test)]
+    pub fn snapshot_cache_len(&self) -> usize {
+        self.snapshot_cache.len()
     }
 
     /// Moves to a page, rebuilding when that page changes which range applies, and keeping
@@ -418,6 +455,8 @@ impl App {
 
     fn finish_reload(&mut self, data: AppData) {
         self.data = data;
+        // New data invalidates every cached range.
+        self.snapshot_cache.clear();
         self.recompute();
         self.last_read = Local::now();
         self.set_status("Reloaded usage data from disk");
@@ -1770,6 +1809,131 @@ mod tests {
             frame.lines().next().unwrap_or_default().contains("Loaded"),
             "the read time stays on the rule: {frame}"
         );
+    }
+
+    #[test]
+    fn revisiting_a_range_serves_the_cached_snapshot() {
+        let mut app = app_with(Page::Models, TimeRange::Last7Days, vec![test_event()]);
+        let cold_7d = stats_json(
+            &crate::analytics::build_snapshot_view(
+                &app.data,
+                &app.pricing,
+                TimeRange::Last7Days,
+                ZeroCostBehavior::KeepZero,
+                View::default(),
+            ),
+            TimeRange::Last7Days,
+        );
+        assert_eq!(stats_json(&app.snapshot, TimeRange::Last7Days), cold_7d);
+
+        // Visit another range and come back: the same JSON, no rebuild.
+        app.range = TimeRange::All;
+        app.recompute();
+        app.range = TimeRange::Last7Days;
+        app.recompute();
+
+        assert_eq!(stats_json(&app.snapshot, TimeRange::Last7Days), cold_7d);
+        assert_eq!(app.snapshot_cache.len(), 2);
+    }
+
+    #[test]
+    fn cached_snapshots_agree_with_cold_builds_on_every_range() {
+        let app = app_with(Page::Models, TimeRange::All, vec![test_event()]);
+        for range in [
+            TimeRange::All,
+            TimeRange::Today,
+            TimeRange::Last7Days,
+            TimeRange::Last30Days,
+        ] {
+            let cold = crate::analytics::build_snapshot_view(
+                &app.data,
+                &app.pricing,
+                range,
+                ZeroCostBehavior::KeepZero,
+                View::default(),
+            );
+            let app = app_with(Page::Models, range, vec![test_event()]);
+            // One entry per visited range, each identical to a cold build.
+            assert_eq!(stats_json(&app.snapshot, range), stats_json(&cold, range));
+            assert!(app.snapshot_cache_len() == 1);
+        }
+    }
+
+    #[test]
+    fn reload_clears_the_snapshot_cache() {
+        let mut app = app_with(Page::Models, TimeRange::Last7Days, vec![test_event()]);
+        app.range = TimeRange::All;
+        app.recompute();
+        assert_eq!(app.snapshot_cache.len(), 2);
+
+        let mut richer = test_event();
+        richer.model_id = "claude-4".to_string();
+        app.finish_reload(test_data(vec![test_event(), richer]));
+
+        // One entry: the current range rebuilt from the new data.
+        assert_eq!(app.snapshot_cache.len(), 1);
+        let ids: Vec<&str> = app
+            .snapshot
+            .models
+            .iter()
+            .map(|row| row.id.as_str())
+            .collect();
+        assert!(ids.contains(&"claude-4"), "{ids:?}");
+    }
+
+    #[test]
+    fn different_days_cache_separately() {
+        let mut app = app_with(Page::Models, TimeRange::Last7Days, vec![test_event()]);
+        let today = current_local_date();
+        let yesterday = today - chrono::Duration::days(1);
+        let _ = app.cached_snapshot(TimeRange::Last7Days, today);
+        let _ = app.cached_snapshot(TimeRange::Last7Days, yesterday);
+        // The day is part of the key, so a midnight rollover rebuilds once.
+        assert_eq!(app.snapshot_cache.len(), 2);
+    }
+
+    #[test]
+    fn budget_matches_the_cached_thirty_day_total() {
+        let mut event = test_event();
+        event.stored_cost_usd = Some(Decimal::new(150, 2));
+        let mut app = App::new(
+            test_data(vec![event]),
+            test_pricing(),
+            Theme::builtin_dark(),
+            ZeroCostBehavior::KeepZero,
+            no_input_options(),
+            Page::Models,
+            TimeRange::Last7Days,
+            View::default(),
+            Some(Decimal::new(100, 0)),
+            Brand::default(),
+            None,
+        );
+
+        let spend_known = app
+            .budget
+            .as_ref()
+            .expect("cap set, so budget computed")
+            .spend
+            .known;
+        let today = current_local_date();
+        let thirty = app
+            .cached_snapshot(crate::analytics::BUDGET_WINDOW, today)
+            .overview
+            .total_cost
+            .clone();
+        assert_eq!(spend_known, thirty.known);
+        assert_eq!(spend_known, Decimal::new(150, 2));
+
+        // And the cached 30d total is what a cold 30d build reports.
+        let cold = crate::analytics::build_snapshot_view(
+            &app.data,
+            &app.pricing,
+            crate::analytics::BUDGET_WINDOW,
+            ZeroCostBehavior::KeepZero,
+            View::default(),
+        );
+        assert_eq!(thirty.known, cold.overview.total_cost.known);
     }
 
     #[test]

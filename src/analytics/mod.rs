@@ -19,7 +19,7 @@ use crate::analytics::view::View;
 use crate::cache::models_cache::PricingCatalog;
 use crate::db::models::{AppData, MessageRecord, UsageEvent};
 use crate::utils::pricing::{PriceSummary, ZeroCostBehavior, update_price_summary};
-use crate::utils::time::{TimeRange, current_local_date, in_range};
+use crate::utils::time::{TimeRange, current_local_date};
 
 #[derive(Clone, Debug)]
 pub struct OverviewStats {
@@ -278,27 +278,6 @@ impl BudgetState {
 /// The window the budget is measured over: the same one the `30d` range shows, so the
 /// budget and the list pages agree about what the last month means.
 pub const BUDGET_WINDOW: TimeRange = TimeRange::Last30Days;
-
-/// The cost of the events inside the budget window, using the same rule the overview
-/// uses for every row. The range selector plays no part: a budget answers what the last
-/// 30 days cost, whatever window the pages are showing.
-pub fn budget_spend(
-    events: &[UsageEvent],
-    pricing: &PricingCatalog,
-    zero_cost_behavior: ZeroCostBehavior,
-    today: NaiveDate,
-) -> PriceSummary {
-    let mut spend = PriceSummary::default();
-    for event in events {
-        let in_window = event
-            .activity_date()
-            .is_some_and(|date| in_range(date, BUDGET_WINDOW, today));
-        if in_window {
-            update_price_summary(&mut spend, pricing, event, zero_cost_behavior);
-        }
-    }
-    spend
-}
 
 /// The sessions whose project matches, resolved the same way session rows resolve it:
 /// the worktree's file name first, then the stored project name, compared without
@@ -657,73 +636,6 @@ mod tests {
             without.overview.total_cost.known,
             with_default.overview.total_cost.known
         );
-    }
-
-    #[test]
-    fn budget_spend_counts_the_last_thirty_days() {
-        // A rolling window, not a calendar month: the last 30 days, which is the same
-        // window the `30d` range shows.
-        let today = current_local_date();
-        let now = Local::now();
-        let mut inside = event_with("inside", "acme", Some(Decimal::new(3, 0)), 100);
-        inside.created_at = Some(now);
-        inside.session_started_at = Some(now);
-
-        let mut edge = event_with("edge", "acme", Some(Decimal::new(5, 0)), 100);
-        let twenty_nine_days_ago = today - chrono::Duration::days(29);
-        let stamp = twenty_nine_days_ago
-            .and_hms_opt(9, 0, 0)
-            .unwrap()
-            .and_local_timezone(Local)
-            .unwrap();
-        edge.created_at = Some(stamp);
-        edge.session_started_at = Some(stamp);
-
-        let mut outside = event_with("outside", "acme", Some(Decimal::new(7, 0)), 200);
-        let forty_days_ago = today - chrono::Duration::days(40);
-        let stamp = forty_days_ago
-            .and_hms_opt(9, 0, 0)
-            .unwrap()
-            .and_local_timezone(Local)
-            .unwrap();
-        outside.created_at = Some(stamp);
-        outside.session_started_at = Some(stamp);
-
-        let spend = super::budget_spend(
-            &[inside, edge, outside],
-            &empty_catalog(),
-            ZeroCostBehavior::KeepZero,
-            today,
-        );
-
-        assert_eq!(
-            spend.known,
-            Decimal::new(8, 0),
-            "today and 29 days ago count, 40 days ago does not"
-        );
-        assert!(spend.has_known);
-    }
-
-    #[test]
-    fn budget_spend_ignores_the_range_by_construction() {
-        // The function takes no range: whatever the pages show, the budget answers the
-        // last 30 days.
-        let today = current_local_date();
-        let mut event = event_with("m", "acme", Some(Decimal::ONE), 10);
-        let now = Local::now();
-        event.created_at = Some(now);
-        event.session_started_at = Some(now);
-
-        for range in [TimeRange::All, TimeRange::Today, TimeRange::Last7Days] {
-            let _ = range;
-            let spend = super::budget_spend(
-                std::slice::from_ref(&event),
-                &empty_catalog(),
-                ZeroCostBehavior::KeepZero,
-                today,
-            );
-            assert_eq!(spend.known, Decimal::ONE);
-        }
     }
 
     fn event_in(project: Option<&str>, path: Option<&str>) -> UsageEvent {

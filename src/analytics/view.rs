@@ -9,7 +9,7 @@
 ///
 /// Free models are never filtered out: a model that cost nothing is still a row, and its
 /// tokens still count towards the totals.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub struct View {
     /// Show only this project, matched the way session rows resolve it.
     pub project: Option<String>,

@@ -3,7 +3,7 @@ use rust_decimal::Decimal;
 use crate::cache::models_cache::{PricingCatalog, price_tokens};
 use crate::db::models::UsageEvent;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum ZeroCostBehavior {
     #[default]
     EstimateWhenZero,

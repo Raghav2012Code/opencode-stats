@@ -1,6 +1,6 @@
 use chrono::{DateTime, Duration, Local, NaiveDate, TimeZone};
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum TimeRange {
     #[default]
     All,
