@@ -9,10 +9,9 @@ use crate::ui::theme::Theme;
 
 /// One glyph per level, from no usage to the busiest day. The ink grows with the level,
 /// so the ramp still reads when the colours are close together.
-/// Lower-eighth blocks, one per level: each fills its cell's full width, so neighbouring
-/// cells join without a gap (a right-hand block such as `▉` would leave one), and the ink
-/// grows with the level.
-const LEVEL_GLYPHS: [char; HEAT_LEVELS] = ['·', '▁', '▃', '▅', '▇', '█'];
+/// Every glyph fills its whole cell, so neighbouring cells join without gaps or
+/// ragged edges and an active stretch reads as one solid block.
+const LEVEL_GLYPHS: [char; HEAT_LEVELS] = ['·', '░', '▒', '▓', '▉', '█'];
 
 pub struct HeatmapWidget<'a> {
     pub data: &'a HeatmapData,
@@ -191,7 +190,7 @@ mod tests {
         }
         for x in 0..40u16 {
             if let Some(cell) = buffer.cell((x, 9))
-                && matches!(cell.symbol(), "·" | "▁" | "▃" | "▅" | "▇" | "█")
+                && matches!(cell.symbol(), "·" | "░" | "▒" | "▓" | "▉" | "█")
             {
                 legend.push(cell.fg);
             }
@@ -385,10 +384,10 @@ mod tests {
             .iter()
             .map(|glyph| match glyph {
                 '·' => 0,
-                '▁' => 1,
-                '▃' => 2,
-                '▅' => 3,
-                '▇' => 4,
+                '░' => 1,
+                '▒' => 2,
+                '▓' => 3,
+                '▉' => 4,
                 '█' => 5,
                 other => panic!("unexpected level glyph {other:?}"),
             })
@@ -398,5 +397,41 @@ mod tests {
         for pair in covered.windows(2) {
             assert!(pair[1] > pair[0], "the ramp must keep growing: {covered:?}");
         }
+    }
+
+    #[test]
+    fn an_all_levels_row_occupies_exactly_one_cell_per_week() {
+        // Every level glyph is one column wide: a row of all six levels takes the
+        // label plus six cells, with nothing wrapping onto the next line and no
+        // column pushed out of place. Lower blocks join raggedly and ambiguous
+        // widths stagger the grid on CJK-font terminals, which is what this pins.
+        let theme = Theme::builtin_dark();
+        let data = data_with_every_level();
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    HeatmapWidget {
+                        data: &data,
+                        theme: &theme,
+                    },
+                    Rect::new(0, 0, 40, 10),
+                );
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let row: String = (0..buffer.area.width)
+            .map(|x| {
+                buffer
+                    .cell((x, 1))
+                    .map(|cell| cell.symbol().to_string())
+                    .unwrap_or_default()
+            })
+            .collect();
+        let row = row.trim_end().to_string();
+
+        let mut expected = "Mon ".to_string();
+        expected.extend(super::LEVEL_GLYPHS.iter());
+        assert_eq!(row, expected, "one cell per week, no wrap: {row:?}");
     }
 }
