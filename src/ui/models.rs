@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use nucleo_matcher::Matcher;
 use nucleo_matcher::Utf32String;
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
@@ -25,6 +27,11 @@ pub struct SearchState {
     /// characters can only narrow AND-matches, so an extension scans the previous
     /// results instead of every id.
     last_trimmed: String,
+    /// Highlight byte ranges per row, computed once per query: the overlay renders
+    /// its rows every frame, and recomputing their matches per frame is the jank.
+    /// Ranges, not spans, so selection moves and theme switches stay live.
+    /// Behind a `RefCell` because rendering only holds a shared reference.
+    highlights: std::cell::RefCell<HashMap<usize, Vec<(usize, usize)>>>,
     pub filtered_indices: Vec<usize>,
     pub selected: usize,
     pub scroll_offset: usize,
@@ -41,6 +48,7 @@ impl SearchState {
             ids,
             haystacks,
             last_trimmed: String::new(),
+            highlights: std::cell::RefCell::new(HashMap::new()),
             filtered_indices: (0..total).collect(),
             selected,
             scroll_offset,
@@ -63,6 +71,10 @@ impl SearchState {
                 (0..self.ids.len()).collect()
             };
         self.filtered_indices = filter_indices(&trimmed, &self.haystacks, &candidates);
+        if trimmed != self.last_trimmed {
+            // New terms, new ranges: every cached highlight belongs to the old query.
+            self.highlights.borrow_mut().clear();
+        }
         self.last_trimmed = trimmed;
         if has_query {
             self.selected = 0;
@@ -78,6 +90,30 @@ impl SearchState {
             }
         }
     }
+
+    /// Highlight byte ranges for one row, computed once per query and then served
+    /// from the cache: the overlay renders its rows every frame, including scrolls
+    /// that change nothing about the matches.
+    pub fn cached_highlight(&self, row: usize, id: &str) -> Vec<(usize, usize)> {
+        if let Some(ranges) = self.highlights.borrow().get(&row) {
+            return ranges.clone();
+        }
+        let ranges = highlight_byte_ranges(
+            &patterns_for(&self.query),
+            self.haystacks[row].slice(..),
+            id,
+        );
+        self.highlights.borrow_mut().insert(row, ranges.clone());
+        ranges
+    }
+}
+
+/// One term's `Pattern` per whitespace-separated term, parsed once per use.
+fn patterns_for(query: &str) -> Vec<Pattern> {
+    query
+        .split_whitespace()
+        .map(|term| Pattern::parse(term, CaseMatching::Ignore, Normalization::Smart))
+        .collect()
 }
 
 fn filter_indices(query: &str, haystacks: &[Utf32String], candidates: &[usize]) -> Vec<usize> {
@@ -87,10 +123,7 @@ fn filter_indices(query: &str, haystacks: &[Utf32String], candidates: &[usize]) 
 
     let mut matcher = Matcher::default();
     // Parsed once per keystroke, not once per term per item.
-    let patterns: Vec<Pattern> = query
-        .split_whitespace()
-        .map(|term| Pattern::parse(term, CaseMatching::Ignore, Normalization::Smart))
-        .collect();
+    let patterns = patterns_for(query);
     let mut results: Vec<(usize, u32)> = Vec::new();
 
     for &i in candidates {
@@ -116,47 +149,62 @@ fn filter_indices(query: &str, haystacks: &[Utf32String], candidates: &[usize]) 
     results.into_iter().map(|(i, _)| i).collect()
 }
 
-fn fuzzy_match_positions(query: &str, text: &str) -> Vec<usize> {
+/// Highlight byte ranges of `text` matched by `patterns`. Nucleo reports char
+/// positions, but spans slice bytes: the char ranges are translated through one
+/// `char_indices` walk, so a match inside a CJK title can never land off a
+/// boundary and panic the frame.
+fn highlight_byte_ranges(
+    patterns: &[Pattern],
+    haystack: nucleo_matcher::Utf32Str<'_>,
+    text: &str,
+) -> Vec<(usize, usize)> {
     let mut matcher = Matcher::default();
-    let terms: Vec<&str> = query.split_whitespace().collect();
-    let mut char_buf = Vec::new();
-    let haystack = nucleo_matcher::Utf32Str::new(text, &mut char_buf);
-    let mut positions: Vec<usize> = Vec::new();
+    let mut positions: Vec<u32> = Vec::new();
 
-    for term in &terms {
-        let pattern = Pattern::parse(term, CaseMatching::Ignore, Normalization::Smart);
+    for pattern in patterns {
         let mut indices_buf = Vec::new();
-        pattern.indices(haystack, &mut matcher, &mut indices_buf);
-        if !indices_buf.is_empty() {
-            for idx in indices_buf {
-                positions.push(idx as usize);
-            }
+        if pattern
+            .indices(haystack, &mut matcher, &mut indices_buf)
+            .is_some()
+        {
+            positions.extend(indices_buf);
         }
     }
 
     positions.sort_unstable();
     positions.dedup();
-    positions
-}
-
-fn merge_to_ranges(positions: &[usize]) -> Vec<(usize, usize)> {
     if positions.is_empty() {
-        return vec![];
+        return Vec::new();
     }
-    let mut ranges = Vec::new();
+    let mut char_ranges: Vec<(u32, u32)> = Vec::new();
     let mut start = positions[0];
     let mut end = start + 1;
     for &pos in &positions[1..] {
         if pos == end {
             end = pos + 1;
         } else {
-            ranges.push((start, end));
+            char_ranges.push((start, end));
             start = pos;
             end = pos + 1;
         }
     }
-    ranges.push((start, end));
-    ranges
+    char_ranges.push((start, end));
+
+    if text.is_ascii() {
+        return char_ranges
+            .into_iter()
+            .map(|(start, end)| (start as usize, end as usize))
+            .collect();
+    }
+    let byte_offsets: Vec<usize> = text
+        .char_indices()
+        .map(|(byte, _)| byte)
+        .chain(std::iter::once(text.len()))
+        .collect();
+    char_ranges
+        .into_iter()
+        .map(|(start, end)| (byte_offsets[start as usize], byte_offsets[end as usize]))
+        .collect()
 }
 
 fn truncate_query_left(query: &str, max_width: u16) -> String {
@@ -543,11 +591,10 @@ fn render_search_overlay<R: ListRow>(
             if search.query.trim().is_empty() {
                 spans.push(Span::styled(id.to_string(), fg));
             } else {
-                let positions = fuzzy_match_positions(&search.query, id);
-                if positions.is_empty() {
+                let ranges = search.cached_highlight(real_idx, id);
+                if ranges.is_empty() {
                     spans.push(Span::styled(id.to_string(), fg));
                 } else {
-                    let ranges = merge_to_ranges(&positions);
                     let mut cursor = 0usize;
                     for (start, end) in &ranges {
                         if *start > cursor {
@@ -788,6 +835,110 @@ mod tests {
         assert!(text.contains("<esc> quit"), "{text}");
         assert!(text.contains("<enter> select"), "{text}");
         assert!(text.contains('▌'), "the selected row is marked: {text}");
+    }
+
+    #[test]
+    fn highlighting_a_cjk_match_does_not_panic() {
+        let snapshot = snapshot(vec![usage_row("修复登录页面的布局问题", 42)], vec![]);
+        let mut search = super::SearchState::new(vec!["修复登录页面的布局问题".to_string()], 0);
+        search.query = "修复".to_string();
+        search.update_filter();
+
+        let text = list_lines(&snapshot, false, 0, Some(&search), None).join("\n");
+        // Buffer cells join wide characters with a padding cell, so the title reads
+        // with spaces between characters: collapse them before matching.
+        assert!(text.replace(' ', "").contains("修复"), "{text}");
+    }
+
+    #[test]
+    fn highlight_ranges_cover_exactly_the_matched_text() {
+        let mut search = super::SearchState::new(
+            vec!["gpt-5".to_string(), "修复登录页面的布局问题".to_string()],
+            0,
+        );
+        search.query = "gpt".to_string();
+        search.update_filter();
+        assert_eq!(search.cached_highlight(0, "gpt-5"), vec![(0, 3)]);
+        // No match on the CJK row for this query: empty ranges, plain span.
+        assert!(
+            search
+                .cached_highlight(1, "修复登录页面的布局问题")
+                .is_empty()
+        );
+
+        search.query = "gpt 5".to_string();
+        search.update_filter();
+        assert_eq!(search.cached_highlight(0, "gpt-5"), vec![(0, 3), (4, 5)]);
+
+        search.query = "修复".to_string();
+        search.update_filter();
+        // Two CJK characters, three bytes each.
+        assert_eq!(
+            search.cached_highlight(1, "修复登录页面的布局问题"),
+            vec![(0, 6)]
+        );
+    }
+
+    #[test]
+    fn highlights_are_cached_per_query_and_cleared_on_change() {
+        let mut search =
+            super::SearchState::new(vec!["gpt-5".to_string(), "gpt-4o".to_string()], 0);
+        search.query = "gpt".to_string();
+        search.update_filter();
+        assert!(search.highlights.borrow().is_empty());
+
+        let first = search.cached_highlight(0, "gpt-5");
+        assert_eq!(first, vec![(0, 3)]);
+        assert_eq!(search.highlights.borrow().len(), 1);
+        // Cache hit serves the same ranges.
+        assert_eq!(search.cached_highlight(0, "gpt-5"), first);
+
+        // Same query re-filtered (e.g. after a selection move): cache survives.
+        search.update_filter();
+        assert_eq!(search.highlights.borrow().len(), 1);
+
+        // New query: the old ranges belong to the old terms.
+        search.query = "gpt-5".to_string();
+        search.update_filter();
+        assert!(search.highlights.borrow().is_empty());
+        assert_eq!(search.cached_highlight(0, "gpt-5"), vec![(0, 5)]);
+    }
+
+    #[test]
+    fn cached_and_fresh_overlays_render_identically() {
+        let ids = search_ids();
+        let rows: Vec<UsageRow> = ids.iter().map(|id| usage_row(id, 42)).collect();
+        let snap = snapshot(rows, vec![]);
+        let mut carried = super::SearchState::new(ids.clone(), 0);
+        for query in [
+            "g", "gpt", "gpt 5", "claude", "cla", "", "修复", "布局", "zzz",
+        ] {
+            let mut fresh = super::SearchState::new(ids.clone(), 0);
+            fresh.query = query.to_string();
+            fresh.update_filter();
+            carried.query = query.to_string();
+            carried.update_filter();
+            let fresh_text = list_lines(&snap, false, 0, Some(&fresh), None).join("\n");
+            let carried_text = list_lines(&snap, false, 0, Some(&carried), None).join("\n");
+            assert_eq!(carried_text, fresh_text, "overlay differs on {query:?}");
+        }
+    }
+
+    #[test]
+    fn repeated_overlay_renders_are_identical() {
+        let ids = search_ids();
+        let rows: Vec<UsageRow> = ids.iter().map(|id| usage_row(id, 42)).collect();
+        let snap = snapshot(rows, vec![]);
+        let mut search = super::SearchState::new(ids, 0);
+        search.query = "g".to_string();
+        search.update_filter();
+
+        let first = list_lines(&snap, false, 0, Some(&search), None).join("\n");
+        search.scroll_offset = 1;
+        let _ = list_lines(&snap, false, 0, Some(&search), None).join("\n");
+        search.scroll_offset = 0;
+        let again = list_lines(&snap, false, 0, Some(&search), None).join("\n");
+        assert_eq!(first, again, "same query scrolled and back");
     }
 
     #[test]
