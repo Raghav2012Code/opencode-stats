@@ -16,10 +16,14 @@
 //!   OC_STATS_BENCH_DB         path to an opencode.db
 
 use crate::analytics::build_snapshot;
+use crate::analytics::view::View;
 use crate::cache::models_cache::{PricingAvailability, PricingCatalog};
+use crate::config::app_config::Brand;
 use crate::db::models::InputOptions;
 use crate::db::queries::load_app_data;
+use crate::ui::app::{App, Page};
 use crate::ui::models::SearchState;
+use crate::ui::theme::Theme;
 use crate::utils::pricing::ZeroCostBehavior;
 use crate::utils::time::TimeRange;
 use rusqlite::Connection;
@@ -242,6 +246,25 @@ fn baseline_cold_start_and_find_filter_timing() {
     let snap_ms = snap_start.elapsed().as_secs_f64() * 1000.0;
     let total_ms = load_ms + snap_ms;
 
+    // Shell availability (#46): constructing the loading shell, which is all the
+    // first frame waits for. The database read lands afterwards, in the background.
+    let shell_start = Instant::now();
+    let _shell = App::loading(
+        empty_pricing(),
+        Theme::builtin_dark(),
+        ZeroCostBehavior::KeepZero,
+        InputOptions {
+            database_path: None,
+        },
+        Page::Models,
+        TimeRange::Last7Days,
+        View::default(),
+        None,
+        Brand::default(),
+        None,
+    );
+    let shell_ms = shell_start.elapsed().as_secs_f64() * 1000.0;
+
     // Find filter: time each keystroke over the page's list. One carried `SearchState`
     // is typed through the whole sequence, exactly like the real find path calls
     // `update_filter` per keystroke: appends (`g` to `gpt-5`) exercise the
@@ -282,6 +305,9 @@ fn baseline_cold_start_and_find_filter_timing() {
             "build_snapshot_ms": snap_ms,
             "total_ms": total_ms,
         },
+        "shell": {
+            "construct_ms": shell_ms,
+        },
         "find_filter": {
             "items": item_count,
             "keystrokes": keystrokes.iter().map(|(q, ms, n)| serde_json::json!({
@@ -311,6 +337,8 @@ fn baseline_cold_start_and_find_filter_timing() {
         "cold start: load {:.2}ms + snapshot {:.2}ms = {:.2}ms",
         load_ms, snap_ms, total_ms
     );
+    println!("shell: construct {shell_ms:.3}ms");
+
     for (q, ms, n) in &keystrokes {
         println!("find {:>10}: {:.3}ms -> {} results", q, ms, n);
     }

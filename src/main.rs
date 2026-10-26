@@ -61,14 +61,13 @@ async fn main() -> Result<()> {
     let range = app_config.app.range()?;
 
     let input_options = InputOptions { database_path };
-    let data = load_app_data(&input_options).wrap_err("failed to load OpenCode usage data")?;
 
     let pricing = PricingCatalog::load().wrap_err("failed to load pricing catalog")?;
     let (theme_kind, theme) =
         resolve_theme(cli.theme, &app_config).wrap_err("failed to resolve theme")?;
     let zero_cost_behavior = ZeroCostBehavior::from_ignore_zero(cli.ignore_zero);
-    let app = App::new(
-        data,
+    // The shell paints first; the database read lands in the background, like `R`.
+    let mut app = App::loading(
         pricing,
         theme,
         zero_cost_behavior,
@@ -80,6 +79,7 @@ async fn main() -> Result<()> {
         brand,
         reload_every,
     );
+    app.begin_initial_load();
     app.run().await?;
     if show_exit_art {
         print_exit_art(theme_kind);

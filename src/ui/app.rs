@@ -19,7 +19,7 @@ use crate::analytics::view::View;
 use crate::analytics::{AnalyticsSnapshot, BudgetState, build_snapshot_view};
 use crate::cache::models_cache::{PricingCatalog, refresh_remote_models};
 use crate::config::app_config::Brand;
-use crate::db::models::{AppData, InputOptions};
+use crate::db::models::{AppData, ImportStats, InputOptions};
 use crate::db::queries::load_app_data;
 use crate::stats_output::{stats_csv, stats_json};
 use crate::ui::export::{artifact_prefix, share_card_file_name};
@@ -122,6 +122,15 @@ impl Page {
     }
 }
 
+/// Whether the first database load has landed. The shell paints immediately in
+/// `Loading`; only `Ready` draws data, and `Failed` names the error with a retry.
+#[derive(Clone, Debug)]
+enum StartupState {
+    Loading,
+    Ready,
+    Failed(String),
+}
+
 /// The exact inputs a snapshot was built from: range, day, view and pricing behavior.
 /// Same key, same snapshot — the builder is pure over these.
 type SnapshotKey = (TimeRange, NaiveDate, View, ZeroCostBehavior);
@@ -142,6 +151,9 @@ pub struct App {
     budget_cap: Option<Decimal>,
     budget: Option<BudgetState>,
     brand: Brand,
+    /// `Loading` until the first database read lands, `Failed` with the error when it
+    /// does not. Only `Ready` draws data.
+    startup: StartupState,
     reload_every: Option<Duration>,
     pub should_quit: bool,
     status_message: Option<StatusMessage>,
@@ -228,6 +240,7 @@ impl App {
             reload_sender,
             reload_updates,
             reload_in_flight: false,
+            startup: StartupState::Ready,
         };
         app.refresh_budget(current_local_date());
 
@@ -243,6 +256,50 @@ impl App {
         }
 
         app
+    }
+
+    /// The shell before the first database read lands: empty data, an empty-based
+    /// snapshot, and `Loading` on screen. Does no IO itself, so tests construct it
+    /// freely; the caller kicks the background read with [`App::begin_initial_load`].
+    pub fn loading(
+        pricing: PricingCatalog,
+        theme: Theme,
+        zero_cost_behavior: ZeroCostBehavior,
+        input_options: InputOptions,
+        page: Page,
+        range: TimeRange,
+        view: View,
+        budget_cap: Option<Decimal>,
+        brand: Brand,
+        reload_every: Option<Duration>,
+    ) -> Self {
+        let mut app = Self::new(
+            AppData {
+                events: Vec::new(),
+                messages: Vec::new(),
+                session_records: Vec::new(),
+                import_stats: ImportStats::default(),
+            },
+            pricing,
+            theme,
+            zero_cost_behavior,
+            input_options,
+            page,
+            range,
+            view,
+            budget_cap,
+            brand,
+            reload_every,
+        );
+        app.startup = StartupState::Loading;
+        app
+    }
+
+    /// Starts the first database read in the background, like `R` does for later
+    /// reloads. A tick or key that lands while it runs is skipped or reported by the
+    /// existing reload machinery.
+    pub fn begin_initial_load(&mut self) {
+        self.start_reload();
     }
 
     pub async fn run(mut self) -> Result<()> {
@@ -449,12 +506,20 @@ impl App {
     fn apply_reload(&mut self, result: crate::db::errors::Result<AppData>) {
         match result {
             Ok(data) => self.finish_reload(data),
-            Err(err) => self.set_status(format!("Reload failed: {err:#}")),
+            Err(err) => {
+                // Nothing was ever on screen: the failure is the screen, with a retry.
+                // Later failures keep the old snapshot and flash the footer, as before.
+                if !matches!(self.startup, StartupState::Ready) {
+                    self.startup = StartupState::Failed(format!("{err:#}"));
+                }
+                self.set_status(format!("Reload failed: {err:#}"));
+            }
         }
     }
 
     fn finish_reload(&mut self, data: AppData) {
         self.data = data;
+        self.startup = StartupState::Ready;
         // New data invalidates every cached range.
         self.snapshot_cache.clear();
         self.recompute();
@@ -486,47 +551,100 @@ impl App {
         self.render_header(frame, header, theme);
         frame.render_widget(ratatui::widgets::Paragraph::new(""), spacer);
 
-        match self.page {
-            Page::Overview => {
-                render_overview(
+        match &self.startup {
+            StartupState::Ready => match self.page {
+                Page::Overview => {
+                    render_overview(
+                        frame,
+                        body,
+                        &self.snapshot,
+                        self.budget.as_ref(),
+                        &self.brand,
+                        theme,
+                    );
+                }
+                Page::Models => render_models(
                     frame,
                     body,
                     &self.snapshot,
-                    self.budget.as_ref(),
-                    &self.brand,
+                    self.focused_index,
+                    self.search.as_ref(),
+                    self.view.project.as_deref(),
                     theme,
-                );
-            }
-            Page::Models => render_models(
+                ),
+                Page::Providers => render_providers(
+                    frame,
+                    body,
+                    &self.snapshot,
+                    self.focused_index,
+                    self.search.as_ref(),
+                    self.view.project.as_deref(),
+                    theme,
+                ),
+                Page::Sessions => render_sessions(
+                    frame,
+                    body,
+                    &self.snapshot.sessions,
+                    self.focused_index,
+                    self.search.as_ref(),
+                    self.view.project.as_deref(),
+                    theme,
+                ),
+            },
+            StartupState::Loading => Self::render_notice(
                 frame,
                 body,
-                &self.snapshot,
-                self.focused_index,
-                self.search.as_ref(),
-                self.view.project.as_deref(),
+                "Loading usage data…",
+                &self.loading_source_note(),
+                "q quit",
                 theme,
             ),
-            Page::Providers => render_providers(
+            StartupState::Failed(err) => Self::render_notice(
                 frame,
                 body,
-                &self.snapshot,
-                self.focused_index,
-                self.search.as_ref(),
-                self.view.project.as_deref(),
-                theme,
-            ),
-            Page::Sessions => render_sessions(
-                frame,
-                body,
-                &self.snapshot.sessions,
-                self.focused_index,
-                self.search.as_ref(),
-                self.view.project.as_deref(),
+                "Failed to load usage data",
+                err,
+                "R retry · q quit",
                 theme,
             ),
         }
 
         self.render_footer(frame, footer, theme);
+    }
+
+    /// The startup body: a title, one detail line, and the keys that work. The shell
+    /// chrome around it is the app's, so loading and failure read as app states.
+    fn render_notice(
+        frame: &mut Frame<'_>,
+        area: ratatui::layout::Rect,
+        title: &str,
+        detail: &str,
+        hint: &str,
+        theme: &Theme,
+    ) {
+        let body = ratatui::text::Text::from(vec![
+            ratatui::text::Line::from(ratatui::text::Span::styled(
+                title.to_string(),
+                ratatui::style::Style::default().fg(theme.foreground),
+            )),
+            ratatui::text::Line::from(ratatui::text::Span::styled(
+                detail.to_string(),
+                theme.muted_style(),
+            )),
+            ratatui::text::Line::from(ratatui::text::Span::styled(
+                hint.to_string(),
+                theme.muted_style(),
+            )),
+        ]);
+        frame.render_widget(ratatui::widgets::Paragraph::new(body), area);
+    }
+
+    /// Where the first read looks: the named database, or auto-discovery.
+    fn loading_source_note(&self) -> String {
+        match self.input_options.database_path.as_ref() {
+            Some(path) => format!("reading {}", path.display()),
+            None => "reading auto-discovery".to_string(),
+        }
     }
 
     fn render_header(&self, frame: &mut Frame<'_>, area: ratatui::layout::Rect, theme: &Theme) {
@@ -605,6 +723,20 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        // Before the first load lands only quitting and retrying mean anything:
+        // range keys, find, share and export would act on an empty snapshot.
+        if !matches!(self.startup, StartupState::Ready) {
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.should_quit = true;
+                }
+                KeyCode::Char('r') | KeyCode::Char('R') => self.begin_initial_load(),
+                _ => {}
+            }
+            return;
+        }
+
         if let Some(ref mut search) = self.search {
             match key.code {
                 KeyCode::Esc => self.search = None,
@@ -1809,6 +1941,91 @@ mod tests {
             frame.lines().next().unwrap_or_default().contains("Loaded"),
             "the read time stays on the rule: {frame}"
         );
+    }
+
+    fn loading_app() -> App {
+        App::loading(
+            test_pricing(),
+            Theme::builtin_dark(),
+            ZeroCostBehavior::KeepZero,
+            no_input_options(),
+            Page::Models,
+            TimeRange::Last7Days,
+            View::default(),
+            None,
+            Brand::default(),
+            None,
+        )
+    }
+
+    #[test]
+    fn loading_shell_renders_before_data_arrives() {
+        // No `begin_initial_load`: constructing the shell must do no IO at all.
+        let app = loading_app();
+
+        assert!(app.snapshot.models.is_empty());
+        let frame = frame_text(&app, 100, 24);
+        assert!(frame.contains("Loading usage data"), "{frame}");
+        assert!(!frame.contains("gpt-5"), "no data rows yet: {frame}");
+    }
+
+    #[test]
+    fn failed_initial_load_shows_error_with_retry() {
+        use crate::db::errors::Error;
+
+        let mut app = loading_app();
+        app.apply_reload(Err(Error::database_not_found(vec![])));
+
+        let frame = frame_text(&app, 100, 24);
+        assert!(frame.contains("Failed to load usage data"), "{frame}");
+        assert!(frame.contains("retry"), "{frame}");
+        assert!(app.snapshot.models.is_empty());
+    }
+
+    #[test]
+    fn initial_load_transitions_to_ready() {
+        let mut app = loading_app();
+        app.finish_reload(test_data(vec![test_event()]));
+
+        let frame = frame_text(&app, 100, 24);
+        assert!(frame.contains("gpt-5"), "the list page draws data: {frame}");
+        assert!(!frame.contains("Loading usage data"), "{frame}");
+    }
+
+    #[test]
+    fn keys_are_gated_until_the_first_load_lands() {
+        let mut app = loading_app();
+        let range_before = app.range;
+
+        // Range, find, share and export keys do nothing while loading.
+        for key in [
+            KeyCode::Char('3'),
+            KeyCode::Char('f'),
+            KeyCode::Char('s'),
+            KeyCode::Char('e'),
+            KeyCode::Tab,
+        ] {
+            app.handle_key(KeyEvent::new(key, KeyModifiers::empty()));
+        }
+        assert!(!app.should_quit);
+        assert!(app.search.is_none());
+        assert_eq!(app.range, range_before);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::empty()));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn retry_after_failure_starts_a_read() {
+        use crate::db::errors::Error;
+
+        let mut app = loading_app();
+        app.apply_reload(Err(Error::database_not_found(vec![])));
+        app.begin_initial_load();
+
+        // Without a runtime the read runs inline, exactly like `R`: either way a
+        // result is queued and the footer says a read is (or was) running.
+        assert!(app.reload_updates.try_recv().is_ok());
     }
 
     #[test]
