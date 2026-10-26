@@ -242,8 +242,10 @@ fn baseline_cold_start_and_find_filter_timing() {
     let snap_ms = snap_start.elapsed().as_secs_f64() * 1000.0;
     let total_ms = load_ms + snap_ms;
 
-    // Find filter: time each keystroke over the page's list. The real find path
-    // calls SearchState::update_filter, which calls filter_indices internally.
+    // Find filter: time each keystroke over the page's list. One carried `SearchState`
+    // is typed through the whole sequence, exactly like the real find path calls
+    // `update_filter` per keystroke: appends (`g` to `gpt-5`) exercise the
+    // incremental subset, the jump to `cla` a replacement, and `x` to `""` a deletion.
     // On the Sessions page the list is the session titles.
     let items = match &real_db {
         Some(_) => snapshot
@@ -254,9 +256,10 @@ fn baseline_cold_start_and_find_filter_timing() {
         None => synthetic_search_items(sessions),
     };
     let queries = ["g", "gp", "gpt-", "gpt-5", "cla", "clau", "claude", "x", ""];
+    let mut search = SearchState::new(items, 0);
+    let item_count = search.ids.len();
     let mut keystrokes = Vec::new();
     for q in &queries {
-        let mut search = SearchState::new(items.clone(), 0);
         search.query = q.to_string();
         let start = Instant::now();
         search.update_filter();
@@ -280,7 +283,7 @@ fn baseline_cold_start_and_find_filter_timing() {
             "total_ms": total_ms,
         },
         "find_filter": {
-            "items": items.len(),
+            "items": item_count,
             "keystrokes": keystrokes.iter().map(|(q, ms, n)| serde_json::json!({
                 "query": q,
                 "elapsed_ms": ms,

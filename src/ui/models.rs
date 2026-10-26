@@ -1,4 +1,5 @@
 use nucleo_matcher::Matcher;
+use nucleo_matcher::Utf32String;
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
@@ -17,6 +18,13 @@ use crate::utils::formatting::{format_price_summary, format_tokens};
 pub struct SearchState {
     pub query: String,
     pub ids: Vec<String>,
+    /// Each id presegmented for matching, built once: the same list is matched on
+    /// every keystroke, so the UTF-32 work happens here instead of per keystroke.
+    haystacks: Vec<Utf32String>,
+    /// The trimmed query the current results were filtered with. Appending
+    /// characters can only narrow AND-matches, so an extension scans the previous
+    /// results instead of every id.
+    last_trimmed: String,
     pub filtered_indices: Vec<usize>,
     pub selected: usize,
     pub scroll_offset: usize,
@@ -27,9 +35,12 @@ impl SearchState {
         let total = ids.len();
         let selected = focused_index.min(total.saturating_sub(1));
         let scroll_offset = selected.saturating_sub(4);
+        let haystacks = ids.iter().map(|id| Utf32String::from(id.clone())).collect();
         Self {
             query: String::new(),
             ids,
+            haystacks,
+            last_trimmed: String::new(),
             filtered_indices: (0..total).collect(),
             selected,
             scroll_offset,
@@ -37,8 +48,22 @@ impl SearchState {
     }
 
     pub fn update_filter(&mut self) {
-        let has_query = !self.query.trim().is_empty();
-        self.filtered_indices = filter_indices(&self.query, &self.ids);
+        let trimmed = self.query.trim().to_string();
+        let has_query = !trimmed.is_empty();
+        // An extension of the previous query keeps every old whitespace boundary, so
+        // each new term equals or extends an old one and extra terms only narrow:
+        // the previous results are exactly the pool to filter. Compared on the raw
+        // text: a case-only edit costs a full scan rather than risking a wrong
+        // subset, since `to_lowercase` and nucleo's folding can differ on exotic
+        // characters.
+        let candidates: Vec<usize> =
+            if !self.last_trimmed.is_empty() && trimmed.starts_with(&self.last_trimmed) {
+                self.filtered_indices.clone()
+            } else {
+                (0..self.ids.len()).collect()
+            };
+        self.filtered_indices = filter_indices(&trimmed, &self.haystacks, &candidates);
+        self.last_trimmed = trimmed;
         if has_query {
             self.selected = 0;
             self.scroll_offset = 0;
@@ -55,24 +80,25 @@ impl SearchState {
     }
 }
 
-fn filter_indices(query: &str, items: &[String]) -> Vec<usize> {
-    let trimmed = query.trim();
-    if trimmed.is_empty() {
-        return (0..items.len()).collect();
+fn filter_indices(query: &str, haystacks: &[Utf32String], candidates: &[usize]) -> Vec<usize> {
+    if query.is_empty() {
+        return (0..haystacks.len()).collect();
     }
 
     let mut matcher = Matcher::default();
-    let terms: Vec<&str> = trimmed.split_whitespace().collect();
+    // Parsed once per keystroke, not once per term per item.
+    let patterns: Vec<Pattern> = query
+        .split_whitespace()
+        .map(|term| Pattern::parse(term, CaseMatching::Ignore, Normalization::Smart))
+        .collect();
     let mut results: Vec<(usize, u32)> = Vec::new();
 
-    for (i, item) in items.iter().enumerate() {
-        let mut char_buf = Vec::new();
-        let haystack = nucleo_matcher::Utf32Str::new(item, &mut char_buf);
+    for &i in candidates {
+        let haystack = haystacks[i].slice(..);
         let mut all_matched = true;
         let mut total_score = 0u32;
 
-        for term in &terms {
-            let pattern = Pattern::parse(term, CaseMatching::Ignore, Normalization::Smart);
+        for pattern in &patterns {
             if let Some(score) = pattern.score(haystack, &mut matcher) {
                 total_score += score;
             } else {
@@ -617,6 +643,7 @@ mod tests {
                 prompts: 0,
                 models_used: 0,
                 active_days: 0,
+                active_days_span: 0,
                 current_streak: 0,
                 longest_streak: 0,
                 fun_comparison: String::new(),
@@ -770,5 +797,75 @@ mod tests {
         assert!(page_text(&empty, false).contains("No model activity in this time range."));
         assert!(page_text(&empty, true).contains("No provider activity in this time range."));
         // The sessions page has its own empty-state test in the sessions module.
+    }
+
+    fn search_ids() -> Vec<String> {
+        [
+            "gpt-5",
+            "gpt-4o",
+            "claude-4",
+            "o1-mini",
+            "Muse Spark",
+            "修复登录页面的布局问题",
+            "Plain title",
+            "glm-5.3-flash",
+        ]
+        .iter()
+        .map(|item| item.to_string())
+        .collect()
+    }
+
+    /// A query sequence typed two ways must agree exactly, order included: fresh
+    /// state per query (always a full scan) against one carried state (incremental
+    /// on appends, full scans otherwise).
+    fn check_sequence(ids: &[String], queries: &[&str]) {
+        let mut carried = super::SearchState::new(ids.to_vec(), 0);
+        for query in queries {
+            let mut fresh = super::SearchState::new(ids.to_vec(), 0);
+            fresh.query = query.to_string();
+            fresh.update_filter();
+            carried.query = query.to_string();
+            carried.update_filter();
+            assert_eq!(
+                carried.filtered_indices, fresh.filtered_indices,
+                "carried and fresh disagree on {query:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn carried_and_fresh_states_agree_on_appends() {
+        check_sequence(
+            &search_ids(),
+            &[
+                "g", "gp", "gpt", "gpt-", "gpt-5", "gpt-5 ", "gpt-5 m", "gpt-5 mo",
+            ],
+        );
+    }
+
+    #[test]
+    fn carried_and_fresh_states_agree_on_deletes_and_replacements() {
+        check_sequence(
+            &search_ids(),
+            &["claude", "claud", "cla", "", "g", "x", "zzz-no-match", ""],
+        );
+    }
+
+    #[test]
+    fn carried_and_fresh_states_agree_on_case_and_spacing() {
+        check_sequence(
+            &search_ids(),
+            &[
+                "GPT",
+                "gPt",
+                "GpT-5",
+                "  gpt  ",
+                "gpt   5",
+                "   ",
+                "修复",
+                "修复登录",
+                "布局",
+            ],
+        );
     }
 }
