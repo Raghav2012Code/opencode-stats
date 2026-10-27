@@ -45,9 +45,9 @@ struct SessionColumns {
     messages: usize,
 }
 
-/// Every column's width except the title: marker and gap, the number, the gaps between
-/// columns, and the sub-agent flag. See [`session_row`] for the exact layout.
-const FIXED_COLUMNS: usize = 17;
+/// Every column's width except the title: marker and gap, the number, and the gaps between
+/// columns. See [`session_row`] for the exact layout.
+const FIXED_COLUMNS: usize = 13;
 const TITLE_MIN: usize = 4;
 const TITLE_MAX: usize = 30;
 
@@ -90,30 +90,27 @@ fn session_columns(rows: &[SessionUsageRow], width: usize) -> SessionColumns {
 /// The column names over the rows: the same layout as [`session_row`].
 fn session_header(columns: &SessionColumns) -> String {
     format!(
-        " {:>3}  {}  {:>cost$}  {:>tokens$}  {:>messages$} {:<3}",
+        " {:>3}  {}  {:>cost$}  {:>tokens$}  {:>messages$}",
         "#",
         pad_right("Title", columns.title),
         "Cost",
         "Tokens",
         "Msgs",
-        "Sub",
         cost = columns.cost,
         tokens = columns.tokens,
         messages = columns.messages,
     )
 }
 
-/// One session: the number, the title, then cost, tokens and messages, and a sub-agent flag.
+/// One session: the number, the title, then cost, tokens and messages.
 fn session_row(columns: &SessionColumns, number: usize, row: &SessionUsageRow) -> String {
-    let subagent = if row.is_subagent { "◈" } else { "" };
     format!(
-        " {:>3}  {}  {:>cost$}  {:>tokens$}  {:>messages$} {:<3}",
+        " {:>3}  {}  {:>cost$}  {:>tokens$}  {:>messages$}",
         number,
         pad_right(&truncate_label(&row.title, columns.title), columns.title),
         format_price_summary(&row.cost),
         format_tokens(row.total_tokens),
         row.messages,
-        subagent,
         cost = columns.cost,
         tokens = columns.tokens,
         messages = columns.messages,
@@ -387,7 +384,7 @@ mod tests {
     }
 
     #[test]
-    fn renders_session_titles_costs_and_the_subagent_marker() {
+    fn renders_session_titles_and_their_figures() {
         let text = sessions_text(
             vec![
                 session_row_fixture("ses_big", "Big job", true),
@@ -398,7 +395,6 @@ mod tests {
 
         assert!(text.contains("Big job"));
         assert!(text.contains("Small chat"));
-        assert!(text.contains("◈"));
         assert!(text.contains("Total tokens: "));
         assert!(text.contains("Elapsed: "));
         assert!(text.contains("Project: "));
@@ -512,13 +508,14 @@ mod tests {
     fn the_column_names_sit_over_their_figures() {
         let lines = sessions_cells(&[session_row_fixture("ses_1", "Alpha", true)], 70, 16);
         let header = row_with(&lines, "Tokens");
-        for name in ["#", "Title", "Cost", "Tokens", "Msgs", "Sub"] {
+        for name in ["#", "Title", "Cost", "Tokens", "Msgs"] {
             assert!(
                 text_of(header).contains(name),
                 "missing column {name:?} in {}",
                 text_of(header)
             );
         }
+        assert!(!text_of(header).contains("Sub"));
         let row = row_with(&lines, "Alpha");
         assert_eq!(
             column_of(header, "Tokens") + 6,
