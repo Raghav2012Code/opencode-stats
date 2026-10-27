@@ -19,22 +19,13 @@ impl TimeRange {
         }
     }
 
-    pub fn cycle(self) -> Self {
+    /// Short name for the header strip, where space is tight.
+    pub fn short_label(self) -> &'static str {
         match self {
-            Self::All => Self::Today,
-            Self::Today => Self::Last7Days,
-            Self::Last7Days => Self::Last30Days,
-            Self::Last30Days => Self::All,
-        }
-    }
-
-    pub fn from_shortcut(value: char) -> Option<Self> {
-        match value {
-            '1' => Some(Self::All),
-            '2' => Some(Self::Today),
-            '3' => Some(Self::Last7Days),
-            '4' => Some(Self::Last30Days),
-            _ => None,
+            Self::All => "All",
+            Self::Today => "Today",
+            Self::Last30Days => "30d",
+            Self::Last7Days => "7d",
         }
     }
 
@@ -96,11 +87,11 @@ mod tests {
     use super::TimeRange;
 
     #[test]
-    fn cycles_ranges() {
-        assert_eq!(TimeRange::All.cycle(), TimeRange::Today);
-        assert_eq!(TimeRange::Today.cycle(), TimeRange::Last7Days);
-        assert_eq!(TimeRange::Last7Days.cycle(), TimeRange::Last30Days);
-        assert_eq!(TimeRange::Last30Days.cycle(), TimeRange::All);
+    fn short_labels_match_the_header_strip() {
+        assert_eq!(TimeRange::All.short_label(), "All");
+        assert_eq!(TimeRange::Today.short_label(), "Today");
+        assert_eq!(TimeRange::Last7Days.short_label(), "7d");
+        assert_eq!(TimeRange::Last30Days.short_label(), "30d");
     }
 
     #[test]
@@ -114,15 +105,6 @@ mod tests {
         // The `stats --range` CLI name for this variant is "today".
         assert_eq!(TimeRange::Today.label(), "Today");
         assert_eq!(TimeRange::Today.label().to_lowercase(), "today");
-    }
-
-    #[test]
-    fn shortcuts_cover_every_range() {
-        assert_eq!(TimeRange::from_shortcut('1'), Some(TimeRange::All));
-        assert_eq!(TimeRange::from_shortcut('2'), Some(TimeRange::Today));
-        assert_eq!(TimeRange::from_shortcut('3'), Some(TimeRange::Last7Days));
-        assert_eq!(TimeRange::from_shortcut('4'), Some(TimeRange::Last30Days));
-        assert_eq!(TimeRange::from_shortcut('5'), None);
     }
 
     #[test]

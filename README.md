@@ -44,7 +44,7 @@ This repository is **my personal fork** of [Cateds/opencode-stats](https://githu
 
 - A `Sessions` page ranked by cost, beside `Models` and `Providers`.
 - Live reload of the database without restarting.
-- `Overview` is the whole picture: always all time and without a range selector. The range applies to `Models`, `Providers` and `Sessions`, and is remembered while you move between pages.
+- `Overview` is the whole picture: always all time and without a range selector. The range applies to `Models`, `Providers` and `Sessions`, and is remembered while you move between pages. `Today` is offered on `Sessions`; on `Models` and `Providers` it opens as the last 7 days.
 - A spending cap on the `Overview`: what the last 30 days cost, the cap, and what is left.
 - Activity streaks: the current run of days and the longest one, on the `Overview` and on every session.
 - The sessions list scrolls with the focus and stays inside its own area.
@@ -74,7 +74,7 @@ Every change has tests, and the reported figures are cross-checked against indep
 - Automatically reads the OpenCode local database
 - Displays total tokens, costs, session count, message count, prompt count, and other overview metrics
 - View usage breakdown by model and provider
-- Supports four time ranges (all time, today, last 7 days, last 30 days) on the `Models`, `Providers` and `Sessions` pages; `Overview` always shows all time
+- Supports time ranges on the `Models`, `Providers` and `Sessions` pages: all time, last 7 days and last 30 days everywhere, plus today on `Sessions`; `Overview` always shows all time
 - Built-in 365-day activity heatmap for observing long-term usage trends
 - Supports dark / light theme via command-line argument
 - Copy the current view to the clipboard as a share card, with the card also written as a PNG beside your exports and an automatic fallback to a text summary (`Ctrl+S` or `s`)
@@ -253,8 +253,8 @@ Once the program is running, you can quickly navigate pages and time ranges usin
 
 - `Tab` / `Left` / `Right` / `h` / `l` — Switch pages
 - `Up` / `Down` / `j` / `k` — Move focus within `Models` / `Providers` / `Sessions`
-- `r` — Cycle through time ranges (on `Models`, `Providers` and `Sessions`)
-- `1` / `2` / `3` / `4` — Quickly switch time ranges (same pages)
+- `r` — Cycle through the time ranges the current page offers
+- `1` / `2` / `3` / `4` — Pick a range by its position in the header (`Sessions` has four, `Models` and `Providers` three)
 - `Ctrl+S` or `s` — Copy the current view to the clipboard as a share card, and write it as a PNG beside your exports (`s` is there for terminals that take `Ctrl+S` as XOFF)
 - `e` — Export the current view as CSV and JSON
 - `R` — Reload the database
@@ -271,11 +271,11 @@ Pages:
 Time ranges:
 
 - `All time` (`All` in the header)
-- `Today`
+- `Today` (on `Sessions` only)
 - `Last 7 days` (`7d` in the header)
 - `Last 30 days` (`30d` in the header)
 
-The range applies to the `Models`, `Providers` and `Sessions` pages, where the selector appears in the header. `Overview` is the whole picture by design: it always shows all time, offers no range selector, and its exports and share card are named for all time.
+The range applies to the `Models`, `Providers` and `Sessions` pages, where the selector appears in the header. `Models` and `Providers` offer three ranges; `Sessions` also offers `Today`, and a `Today` chosen there opens as `7d` when you move to the other two. `Overview` is the whole picture by design: it always shows all time, offers no range selector, and its exports and share card are named for all time.
 
 ## Data sources and pricing
 

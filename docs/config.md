@@ -25,7 +25,8 @@ Fields:
 
 - `page`: the page the app opens on. Absent means `overview`.
 - `range`: the range the list pages (`Models`, `Providers`, `Sessions`) open on.
-  Absent means `all`. The `Overview` page always shows all time and ignores this.
+  Absent means `all`. `Today` applies to `Sessions`; on `Models` and `Providers`
+  it opens as `7d`. The `Overview` page always shows all time and ignores this.
 - `db`: the database to read. Absent means auto-discovery.
 - `reload_every`: re-read the database on this interval. Absent means no
   automatic reload; reload manually with `R`.

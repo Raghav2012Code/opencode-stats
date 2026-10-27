@@ -117,7 +117,31 @@ impl Page {
     /// it always shows all time, so it offers no range selector and ignores the range keys.
     /// The list pages are the ones you narrow down.
     pub fn uses_range(self) -> bool {
-        !matches!(self, Self::Overview)
+        !self.range_options().is_empty()
+    }
+
+    /// The ranges this page offers. Models and Providers aggregate usage, so a
+    /// single-day window adds little there; Sessions keeps Today.
+    fn range_options(self) -> &'static [TimeRange] {
+        const WITHOUT_TODAY: [TimeRange; 3] =
+            [TimeRange::All, TimeRange::Last7Days, TimeRange::Last30Days];
+        match self {
+            Self::Overview => &[],
+            Self::Models | Self::Providers => &WITHOUT_TODAY,
+            Self::Sessions => &TimeRange::ALL,
+        }
+    }
+
+    /// A range chosen elsewhere, made valid here: Today becomes Last 7 days on the
+    /// pages that do not offer it.
+    fn normalize_range(self, range: TimeRange) -> TimeRange {
+        if self.range_options().contains(&range) {
+            range
+        } else if self.uses_range() {
+            TimeRange::Last7Days
+        } else {
+            TimeRange::All
+        }
     }
 }
 
@@ -183,7 +207,7 @@ impl App {
     ) -> Self {
         // The overview is always all time; the chosen range applies to the list pages.
         let initial_range = if page.uses_range() {
-            range
+            page.normalize_range(range)
         } else {
             TimeRange::All
         };
@@ -215,7 +239,13 @@ impl App {
             snapshot,
             snapshot_cache,
             page,
-            range,
+            // Overview keeps the chosen range for the pages that use it; a list page
+            // stores the range it actually opens on.
+            range: if page.uses_range() {
+                initial_range
+            } else {
+                range
+            },
             theme,
             zero_cost_behavior,
             view,
@@ -429,10 +459,24 @@ impl App {
     fn set_page(&mut self, page: Page) {
         let before = self.effective_range();
         self.page = page;
+        // The overview remembers the range for the list pages, so only a list page's
+        // own choices are enforced when entering it.
+        if page.uses_range() {
+            self.range = page.normalize_range(self.range);
+        }
         self.search = None;
         self.focused_index = 0;
         if self.effective_range() != before {
             self.recompute();
+        }
+    }
+
+    /// The next range this page offers, wrapping at the end.
+    fn next_range(&self) -> TimeRange {
+        let ranges = self.page.range_options();
+        match ranges.iter().position(|range| *range == self.range) {
+            Some(index) => ranges[(index + 1) % ranges.len()],
+            None => ranges[0],
         }
     }
 
@@ -625,29 +669,28 @@ impl App {
             segment_span("Sessions", self.page == Page::Sessions, theme),
         ];
         // The overview is all time, so it shows no range selector to click through. The
-        // labels are the short names `stats --range` uses, and the strip is only drawn in
-        // full when it fits: a narrow terminal falls back to the active range on its own,
-        // because a clipped label reads as a missing range.
+        // strip lists the ranges the page offers, and is only drawn in full when it fits:
+        // a narrow terminal falls back to the active range on its own, because a clipped
+        // label reads as a missing range.
         if self.page.uses_range() {
-            let ranges = [
-                ("All", TimeRange::All),
-                ("Today", TimeRange::Today),
-                ("7d", TimeRange::Last7Days),
-                ("30d", TimeRange::Last30Days),
-            ];
+            let ranges = self.page.range_options();
             let used: usize = spans.iter().map(|span| span.content.chars().count()).sum();
             // `segment_span` renders one space either side of the label.
             let needed: usize = ranges
                 .iter()
-                .map(|(label, _)| label.chars().count() + 2)
+                .map(|range| range.short_label().chars().count() + 2)
                 .sum();
 
             if used + needed <= area.width as usize {
-                for (label, range) in ranges {
-                    spans.push(segment_span(label, self.range == range, theme));
+                for &range in ranges {
+                    spans.push(segment_span(
+                        range.short_label(),
+                        self.range == range,
+                        theme,
+                    ));
                 }
-            } else if let Some((label, _)) = ranges.iter().find(|(_, range)| *range == self.range) {
-                spans.push(segment_span(label, true, theme));
+            } else if ranges.contains(&self.range) {
+                spans.push(segment_span(self.range.short_label(), true, theme));
             }
         }
 
@@ -779,7 +822,7 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') => self.advance_focus(-1),
             // The overview shows all time, so it has no range to cycle or set.
             KeyCode::Char('r') if self.page.uses_range() => {
-                self.range = self.range.cycle();
+                self.range = self.next_range();
                 self.focused_index = 0;
                 self.search = None;
                 self.recompute();
@@ -801,9 +844,14 @@ impl App {
                 self.enter_search();
             }
             KeyCode::Char('e') => self.export_current_view(),
-            KeyCode::Char(value) => {
-                if self.page.uses_range()
-                    && let Some(range) = TimeRange::from_shortcut(value)
+            KeyCode::Char(value) if self.page.uses_range() => {
+                // Digits pick a position in the strip, so a page with three ranges
+                // answers to 1-3 and Sessions still has 1-4.
+                if let Some(range) = value
+                    .to_digit(10)
+                    .and_then(|digit| digit.checked_sub(1))
+                    .and_then(|index| self.page.range_options().get(index as usize))
+                    .copied()
                 {
                     self.range = range;
                     self.focused_index = 0;
@@ -1250,13 +1298,23 @@ mod tests {
             );
         }
 
-        for page in [Page::Models, Page::Providers, Page::Sessions] {
+        for page in [Page::Models, Page::Providers] {
             let app = app_with(page, TimeRange::Last7Days, vec![test_event()]);
             let header = header_line(&app);
             assert!(
                 header.contains("7d") && header.contains("30d"),
-                "{page:?} keeps its full range selector, nothing clipped: {header}"
+                "{page:?} keeps its range selector, nothing clipped: {header}"
             );
+            assert!(
+                !header.contains("Today"),
+                "{page:?} does not offer Today: {header}"
+            );
+        }
+
+        let sessions = app_with(Page::Sessions, TimeRange::Last7Days, vec![test_event()]);
+        let header = header_line(&sessions);
+        for range in ["Today", "7d", "30d"] {
+            assert!(header.contains(range), "Sessions offers {range}: {header}");
         }
     }
 
@@ -1313,14 +1371,77 @@ mod tests {
         assert_eq!(
             app.range,
             TimeRange::Last30Days,
-            "'r' cycles on a list page"
+            "'r' skips Today on Providers"
         );
         app.handle_key(key(KeyCode::Char('2')));
         assert_eq!(
             app.range,
-            TimeRange::Today,
-            "'2' selects Today on a list page"
+            TimeRange::Last7Days,
+            "'2' picks the second range of the strip"
         );
+        app.handle_key(key(KeyCode::Char('3')));
+        assert_eq!(
+            app.range,
+            TimeRange::Last30Days,
+            "'3' picks the third range of the strip"
+        );
+
+        app.set_page(Page::Sessions);
+        app.handle_key(key(KeyCode::Char('2')));
+        assert_eq!(app.range, TimeRange::Today, "Sessions still offers Today");
+        app.handle_key(key(KeyCode::Char('r')));
+        assert_eq!(
+            app.range,
+            TimeRange::Last7Days,
+            "Sessions cycles on from Today"
+        );
+    }
+
+    #[test]
+    fn today_on_sessions_becomes_7d_on_models_and_providers() {
+        let mut app = app_with(Page::Sessions, TimeRange::Today, vec![test_event()]);
+        assert_eq!(app.range, TimeRange::Today);
+
+        for page in [Page::Models, Page::Providers] {
+            app.set_page(Page::Sessions);
+            app.range = TimeRange::Today;
+            app.recompute();
+            app.set_page(page);
+            assert_eq!(
+                app.range,
+                TimeRange::Last7Days,
+                "{page:?} must not keep Today"
+            );
+            assert_eq!(app.effective_range(), TimeRange::Last7Days);
+        }
+
+        app.set_page(Page::Sessions);
+        assert_eq!(
+            app.range,
+            TimeRange::Last7Days,
+            "the coerced range is remembered"
+        );
+    }
+
+    #[test]
+    fn a_configured_today_opens_as_7d_on_models_and_providers() {
+        for page in [Page::Models, Page::Providers] {
+            let app = app_with(page, TimeRange::Today, vec![test_event()]);
+            assert_eq!(app.range, TimeRange::Last7Days, "{page:?}");
+            assert_eq!(app.effective_range(), TimeRange::Last7Days);
+        }
+
+        let sessions = app_with(Page::Sessions, TimeRange::Today, vec![test_event()]);
+        assert_eq!(sessions.range, TimeRange::Today);
+        assert_eq!(sessions.effective_range(), TimeRange::Today);
+
+        let overview = app_with(Page::Overview, TimeRange::Today, vec![test_event()]);
+        assert_eq!(
+            overview.range,
+            TimeRange::Today,
+            "the overview keeps Today for Sessions"
+        );
+        assert_eq!(overview.effective_range(), TimeRange::All);
     }
 
     #[test]
@@ -1338,6 +1459,10 @@ mod tests {
         assert!(
             wide_header.contains("All") && wide_header.contains("30d"),
             "the full strip fits the content width: {wide_header}"
+        );
+        assert!(
+            !wide_header.contains("Today"),
+            "Models never offers Today: {wide_header}"
         );
 
         let narrow = frame_text(&app, 50, 24);
@@ -1893,12 +2018,13 @@ mod tests {
     #[test]
     fn cached_snapshots_agree_with_cold_builds_on_every_range() {
         let app = app_with(Page::Models, TimeRange::All, vec![test_event()]);
-        for range in [
-            TimeRange::All,
-            TimeRange::Today,
-            TimeRange::Last7Days,
-            TimeRange::Last30Days,
-        ] {
+        for range in TimeRange::ALL {
+            // Today lives on Sessions; the other three are shared with Models.
+            let page = if range == TimeRange::Today {
+                Page::Sessions
+            } else {
+                Page::Models
+            };
             let cold = crate::analytics::build_snapshot_view(
                 &app.data,
                 &app.pricing,
@@ -1906,7 +2032,7 @@ mod tests {
                 ZeroCostBehavior::KeepZero,
                 View::default(),
             );
-            let app = app_with(Page::Models, range, vec![test_event()]);
+            let app = app_with(page, range, vec![test_event()]);
             // One entry per visited range, each identical to a cold build.
             assert_eq!(stats_json(&app.snapshot, range), stats_json(&cold, range));
             assert!(app.snapshot_cache_len() == 1);
