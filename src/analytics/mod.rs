@@ -7,8 +7,6 @@ use std::collections::BTreeSet;
 
 use chrono::NaiveDate;
 
-use rust_decimal::Decimal;
-
 use crate::analytics::heatmap_data::{HeatmapData, build_heatmap_data};
 use crate::analytics::model_stats::{
     ModelChartData, SessionUsageRow, UsageRow, build_model_chart, build_provider_chart,
