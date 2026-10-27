@@ -11,12 +11,11 @@ use ratatui::layout::{Constraint, Layout};
 use ratatui::prelude::CrosstermBackend;
 use ratatui::widgets::{Block, Padding};
 use ratatui::{DefaultTerminal, Frame, Terminal, TerminalOptions, Viewport, backend::TestBackend};
-use rust_decimal::Decimal;
 use tokio::sync::mpsc;
 
 use crate::analytics::model_stats::UsageRow;
 use crate::analytics::view::View;
-use crate::analytics::{AnalyticsSnapshot, BudgetState, build_snapshot_view};
+use crate::analytics::{AnalyticsSnapshot, build_snapshot_view};
 use crate::cache::models_cache::{PricingCatalog, refresh_remote_models};
 use crate::config::app_config::Brand;
 use crate::db::models::{AppData, ImportStats, InputOptions};
@@ -148,8 +147,6 @@ pub struct App {
     pub theme: Theme,
     pub zero_cost_behavior: ZeroCostBehavior,
     pub view: View,
-    budget_cap: Option<Decimal>,
-    budget: Option<BudgetState>,
     brand: Brand,
     /// `Loading` until the first database read lands, `Failed` with the error when it
     /// does not. Only `Ready` draws data.
@@ -181,7 +178,6 @@ impl App {
         page: Page,
         range: TimeRange,
         view: View,
-        budget_cap: Option<Decimal>,
         brand: Brand,
         reload_every: Option<Duration>,
     ) -> Self {
@@ -223,8 +219,6 @@ impl App {
             theme,
             zero_cost_behavior,
             view,
-            budget_cap,
-            budget: None,
             brand,
             reload_every,
             should_quit: false,
@@ -242,7 +236,6 @@ impl App {
             reload_in_flight: false,
             startup: StartupState::Ready,
         };
-        app.refresh_budget(current_local_date());
 
         let notices = [
             app.data.import_stats.summary(),
@@ -269,7 +262,6 @@ impl App {
         page: Page,
         range: TimeRange,
         view: View,
-        budget_cap: Option<Decimal>,
         brand: Brand,
         reload_every: Option<Duration>,
     ) -> Self {
@@ -287,7 +279,6 @@ impl App {
             page,
             range,
             view,
-            budget_cap,
             brand,
             reload_every,
         );
@@ -397,7 +388,6 @@ impl App {
     fn recompute(&mut self) {
         let today = current_local_date();
         self.snapshot = self.cached_snapshot(self.effective_range(), today).clone();
-        self.refresh_budget(today);
     }
 
     /// The snapshot for `range`, built once and then served from the cache: range and
@@ -417,20 +407,6 @@ impl App {
         self.snapshot_cache
             .get(&key)
             .expect("snapshot just built for its key")
-    }
-
-    /// What the last 30 days cost, against the configured cap. Taken from the cached
-    /// 30-day snapshot's own total, so the budget and the overview can never disagree;
-    /// the pages' range plays no part. No cap means no 30-day build.
-    fn refresh_budget(&mut self, today: NaiveDate) {
-        self.budget = self.budget_cap.map(|cap| {
-            let spend = self
-                .cached_snapshot(crate::analytics::BUDGET_WINDOW, today)
-                .overview
-                .total_cost
-                .clone();
-            BudgetState { cap, spend }
-        });
     }
 
     /// The range the current page is drawn with. The overview ignores the selection and is
@@ -554,14 +530,7 @@ impl App {
         match &self.startup {
             StartupState::Ready => match self.page {
                 Page::Overview => {
-                    render_overview(
-                        frame,
-                        body,
-                        &self.snapshot,
-                        self.budget.as_ref(),
-                        &self.brand,
-                        theme,
-                    );
+                    render_overview(frame, body, &self.snapshot, &self.brand, theme);
                 }
                 Page::Models => render_models(
                     frame,
@@ -1211,7 +1180,6 @@ mod tests {
             Page::Overview,
             TimeRange::All,
             View::default(),
-            None,
             Brand::default(),
             None,
         )
@@ -1233,7 +1201,6 @@ mod tests {
             page,
             range,
             View::default(),
-            None,
             Brand::default(),
             None,
         )
@@ -1446,7 +1413,6 @@ mod tests {
                 pinned_models: Vec::new(),
                 pinned_providers: Vec::new(),
             },
-            None,
             Brand::default(),
             None,
         );
@@ -1469,113 +1435,8 @@ mod tests {
     }
 
     #[test]
-    fn the_budget_line_reports_spend_cap_and_remainder() {
-        let now = Local::now();
-        let mut event = test_event();
-        event.created_at = Some(now);
-        event.session_started_at = Some(now);
-        event.stored_cost_usd = Some(rust_decimal::Decimal::new(3, 0));
-
-        let under = App::new(
-            test_data(vec![event.clone()]),
-            test_pricing(),
-            Theme::builtin_dark(),
-            ZeroCostBehavior::KeepZero,
-            no_input_options(),
-            Page::Overview,
-            TimeRange::All,
-            View::default(),
-            Some(cap_decimal("10")),
-            Brand::default(),
-            None,
-        );
-        let frame = frame_text(&under, 100, 24);
-        assert!(
-            frame.contains("Budget (last 30 days): $3.00 of $10.00 · $7.00 left"),
-            "under: {frame}"
-        );
-
-        let exact = App::new(
-            test_data(vec![event.clone()]),
-            test_pricing(),
-            Theme::builtin_dark(),
-            ZeroCostBehavior::KeepZero,
-            no_input_options(),
-            Page::Overview,
-            TimeRange::All,
-            View::default(),
-            Some(cap_decimal("3")),
-            Brand::default(),
-            None,
-        );
-        assert!(
-            frame_text(&exact, 100, 24).contains("Budget (last 30 days): $3.00 of $3.00 · at cap"),
-            "exactly at"
-        );
-
-        let over = App::new(
-            test_data(vec![event]),
-            test_pricing(),
-            Theme::builtin_dark(),
-            ZeroCostBehavior::KeepZero,
-            no_input_options(),
-            Page::Overview,
-            TimeRange::All,
-            View::default(),
-            Some(cap_decimal("2")),
-            Brand::default(),
-            None,
-        );
-        let frame = frame_text(&over, 100, 24);
-        assert!(
-            frame.contains("Budget (last 30 days): $3.00 of $2.00")
-                && frame.contains("OVER by $1.00"),
-            "over, visually distinct: {frame}"
-        );
-    }
-
-    #[test]
-    fn the_budget_does_not_move_when_the_range_changes() {
-        let now = Local::now();
-        let mut event = test_event();
-        event.created_at = Some(now);
-        event.session_started_at = Some(now);
-        event.stored_cost_usd = Some(rust_decimal::Decimal::ONE);
-
-        let mut lines = Vec::new();
-        for range in [TimeRange::All, TimeRange::Today, TimeRange::Last7Days] {
-            let app = App::new(
-                test_data(vec![event.clone()]),
-                test_pricing(),
-                Theme::builtin_dark(),
-                ZeroCostBehavior::KeepZero,
-                no_input_options(),
-                Page::Overview,
-                range,
-                View::default(),
-                Some(cap_decimal("10")),
-                Brand::default(),
-                None,
-            );
-            let budget = frame_text(&app, 100, 24)
-                .lines()
-                .find(|line| line.contains("Budget"))
-                .unwrap_or_default()
-                .to_string();
-            lines.push(budget);
-        }
-
-        assert_eq!(lines.len(), 3);
-        assert!(
-            lines.iter().all(|line| line == &lines[0]),
-            "same line whatever the range: {lines:?}"
-        );
-    }
-
-    #[test]
-    fn the_favourite_model_leads_and_the_budget_closes_the_facts() {
-        // The favourite opens the block of facts, the budget closes it: the cap is the
-        // last thing said about the numbers, not the first.
+    fn the_favourite_model_leads_the_facts() {
+        // The favourite opens the block of facts about the numbers.
         let now = Local::now();
         let mut event = test_event();
         event.created_at = Some(now);
@@ -1591,7 +1452,6 @@ mod tests {
             Page::Overview,
             TimeRange::All,
             View::default(),
-            Some(cap_decimal("10")),
             Brand::default(),
             None,
         );
@@ -1608,26 +1468,8 @@ mod tests {
 
         let favourite = row("Favorite model");
         let total_tokens = row("Total tokens");
-        let active_days = row("Active days");
-        let budget = row("Budget");
 
         assert!(favourite < total_tokens, "the favourite opens the block");
-        assert!(active_days < budget, "the budget closes it");
-    }
-
-    #[test]
-    fn no_budget_configured_renders_no_budget_line() {
-        let app = test_app(test_data(vec![test_event()]), no_input_options());
-        let frame = frame_text(&app, 100, 24);
-
-        assert!(
-            !frame.contains("Budget"),
-            "byte-identical behaviour: {frame}"
-        );
-    }
-
-    fn cap_decimal(value: &str) -> rust_decimal::Decimal {
-        value.parse().unwrap()
     }
 
     fn branded_app(tagline: Option<&str>, comparison: bool) -> App {
@@ -1640,7 +1482,6 @@ mod tests {
             Page::Overview,
             TimeRange::All,
             View::default(),
-            None,
             Brand {
                 tagline: tagline.map(str::to_string),
                 show_comparison: comparison,
@@ -1759,7 +1600,6 @@ mod tests {
                 pinned_models: Vec::new(),
                 pinned_providers: Vec::new(),
             },
-            None,
             Brand::default(),
             None,
         );
@@ -1824,7 +1664,6 @@ mod tests {
             Page::Sessions,
             TimeRange::Last7Days,
             View::default(),
-            None,
             Brand::default(),
             None,
         );
@@ -1871,7 +1710,6 @@ mod tests {
             Page::Sessions,
             TimeRange::Last7Days,
             View::default(),
-            None,
             Brand::default(),
             None,
         );
@@ -1952,7 +1790,6 @@ mod tests {
             Page::Models,
             TimeRange::Last7Days,
             View::default(),
-            None,
             Brand::default(),
             None,
         )
@@ -2110,50 +1947,6 @@ mod tests {
     }
 
     #[test]
-    fn budget_matches_the_cached_thirty_day_total() {
-        let mut event = test_event();
-        event.stored_cost_usd = Some(Decimal::new(150, 2));
-        let mut app = App::new(
-            test_data(vec![event]),
-            test_pricing(),
-            Theme::builtin_dark(),
-            ZeroCostBehavior::KeepZero,
-            no_input_options(),
-            Page::Models,
-            TimeRange::Last7Days,
-            View::default(),
-            Some(Decimal::new(100, 0)),
-            Brand::default(),
-            None,
-        );
-
-        let spend_known = app
-            .budget
-            .as_ref()
-            .expect("cap set, so budget computed")
-            .spend
-            .known;
-        let today = current_local_date();
-        let thirty = app
-            .cached_snapshot(crate::analytics::BUDGET_WINDOW, today)
-            .overview
-            .total_cost
-            .clone();
-        assert_eq!(spend_known, thirty.known);
-        assert_eq!(spend_known, Decimal::new(150, 2));
-
-        // And the cached 30d total is what a cold 30d build reports.
-        let cold = crate::analytics::build_snapshot_view(
-            &app.data,
-            &app.pricing,
-            crate::analytics::BUDGET_WINDOW,
-            ZeroCostBehavior::KeepZero,
-            View::default(),
-        );
-        assert_eq!(thirty.known, cold.overview.total_cost.known);
-    }
-
-    #[test]
     fn reload_key_is_wired_regardless_of_database() {
         let mut app = test_app(test_data(vec![test_event()]), no_input_options());
 
@@ -2279,7 +2072,6 @@ mod tests {
         // runtime to spawn into.
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let config = crate::config::app_config::AppConfig::load().unwrap();
-            let budget = config.budget.monthly_cap().unwrap();
             let brand = config.brand.brand().unwrap();
             let view = config.view.view();
 
@@ -2305,7 +2097,6 @@ mod tests {
                     page,
                     TimeRange::All,
                     view.clone(),
-                    budget,
                     brand.clone(),
                     None,
                 );

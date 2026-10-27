@@ -52,7 +52,7 @@ This repository is **my personal fork** of [Cateds/opencode-stats](https://githu
 
 **Configuration**
 
-- A `config.toml` with optional sections: `[app]` (`page`, `range`, `db`, `reload_every`), `[view]` (`project`, `pinned_models`, `pinned_providers`), `[budget]` (a spending cap), `[brand]` (your own strings) and `[theme]`. Every key is optional, and an invalid value fails at startup naming the key and the accepted values.
+- A `config.toml` with optional sections: `[app]` (`page`, `range`, `db`, `reload_every`), `[view]` (`project`, `pinned_models`, `pinned_providers`), `[brand]` (your own strings) and `[theme]`. Every key is optional, and an invalid value fails at startup naming the key and the accepted values.
 - Database precedence is `--db`, then `[app] db`, then `OC_STATS_DB_PATH`, then discovery.
 - The full reference — every section, its values and defaults — is in [`docs/config.md`](docs/config.md).
 

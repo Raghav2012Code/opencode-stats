@@ -48,7 +48,6 @@ async fn main() -> Result<()> {
         app_config.app.database_path().map(PathBuf::from),
     );
     let view = app_config.view.view();
-    let budget_cap = app_config.budget.monthly_cap()?;
     let brand = app_config.brand.brand()?;
     let show_exit_art = brand.show_exit_art;
     let reload_every = app_config.app.reload_interval()?;
@@ -75,7 +74,6 @@ async fn main() -> Result<()> {
         page,
         range,
         view,
-        budget_cap,
         brand,
         reload_every,
     );

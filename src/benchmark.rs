@@ -259,7 +259,6 @@ fn baseline_cold_start_and_find_filter_timing() {
         Page::Models,
         TimeRange::Last7Days,
         View::default(),
-        None,
         Brand::default(),
         None,
     );

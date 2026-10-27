@@ -86,21 +86,8 @@ Totals, percentages and row counts always describe the rows that remain, on
 every surface: the TUI, `stats` and the export all build from the same
 snapshot. While a filter is active, the rule above the content says so.
 
-## `[budget]`
-
-A spending cap in US dollars, measured over the last 30 days.
-
-```toml
-[budget]
-monthly = 50
-```
-
-When set, the Overview shows what the last 30 days cost, the cap, and what is
-left; the over state reads `OVER by $X`. The window is the one the `30d` range
-shows, and it rolls: it is the last 30 days, not the calendar month, so the cap
-measures your recent burn. Changing the range selector changes what is listed
-but never whether you are over. A negative cap fails at startup. Absent means
-no budget line.
+The `[budget]` section was removed with the budget line: a config that still
+sets it fails at startup naming the unknown field. Delete the section.
 
 ## `[brand]`
 

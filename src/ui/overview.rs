@@ -3,12 +3,11 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
 
 use crate::analytics::AnalyticsSnapshot;
-use crate::analytics::BudgetState;
 use crate::config::app_config::Brand;
 use crate::ui::theme::Theme;
 use crate::ui::widgets::common::{metric_line_within, two_columns};
 use crate::ui::widgets::heatmap::HeatmapWidget;
-use crate::utils::formatting::{format_price_summary, format_tokens, format_usd_precise};
+use crate::utils::formatting::{format_price_summary, format_tokens};
 
 /// `57/94`: active days out of the days since first use, or the bare count when the
 /// span is unknown.
@@ -24,11 +23,10 @@ pub fn render_overview(
     frame: &mut ratatui::Frame<'_>,
     area: Rect,
     snapshot: &AnalyticsSnapshot,
-    budget: Option<&BudgetState>,
     brand: &Brand,
     theme: &Theme,
 ) {
-    let [heatmap, legend, spacer, favorite, stats, budget_row, fun] = Layout::default()
+    let [heatmap, legend, spacer, favorite, stats, fun] = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(8),
@@ -36,7 +34,6 @@ pub fn render_overview(
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(6),
-            Constraint::Length(1),
             Constraint::Length(1),
         ])
         .areas(area);
@@ -54,12 +51,6 @@ pub fn render_overview(
         legend,
     );
     frame.render_widget(Paragraph::new(""), spacer);
-
-    // The budget takes the blank row under the metrics, so the block above it never
-    // moves and a dashboard without a budget draws exactly as before.
-    if let Some(budget) = budget {
-        frame.render_widget(Paragraph::new(budget_line(budget, theme)), budget_row);
-    }
 
     // A configured tagline replaces the header line; otherwise the favourite model
     // shows exactly as before.
@@ -179,89 +170,10 @@ pub fn render_overview(
     }
 }
 
-/// One line: what the budget window cost, the cap, and what is left. The over state is
-/// the only one that raises its voice, in the accent style. The window is named, so the
-/// figure is never read as the all-time total shown further down.
-fn budget_line(budget: &BudgetState, theme: &Theme) -> Line<'static> {
-    let spent = format_usd_precise(budget.spend.known);
-    let cap = format_usd_precise(budget.cap);
-    let window = crate::analytics::BUDGET_WINDOW.label().to_lowercase();
-    let mut spans = vec![
-        Span::styled(format!("Budget ({window}): "), theme.muted_style()),
-        Span::styled(format!("{spent} of {cap}"), theme.muted_style()),
-    ];
-
-    if budget.is_over() {
-        spans.push(Span::styled(
-            format!(
-                " · OVER by {}",
-                format_usd_precise(budget.remainder().abs())
-            ),
-            theme.accent_style(),
-        ));
-    } else {
-        let remainder = budget.remainder();
-        let tail = if remainder.is_zero() {
-            " · at cap".to_string()
-        } else {
-            format!(" · {} left", format_usd_precise(remainder))
-        };
-        spans.push(Span::styled(tail, theme.muted_style()));
-    }
-
-    Line::from(spans)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{BudgetState, budget_line};
     use crate::ui::theme::Theme;
     use crate::utils::pricing::PriceSummary;
-    use rust_decimal::Decimal;
-
-    fn state(spent: &str, cap: &str) -> BudgetState {
-        BudgetState {
-            cap: cap.parse().unwrap(),
-            spend: PriceSummary {
-                known: spent.parse().unwrap(),
-                has_known: true,
-                missing: false,
-            },
-        }
-    }
-
-    fn text(state: &BudgetState) -> String {
-        let theme = Theme::builtin_dark();
-        budget_line(state, &theme)
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect::<String>()
-    }
-
-    #[test]
-    fn states_have_the_intended_words() {
-        assert_eq!(
-            text(&state("3", "10")),
-            "Budget (last 30 days): $3.00 of $10.00 · $7.00 left"
-        );
-        assert_eq!(
-            text(&state("10", "10")),
-            "Budget (last 30 days): $10.00 of $10.00 · at cap"
-        );
-        assert_eq!(
-            text(&state("12", "10")),
-            "Budget (last 30 days): $12.00 of $10.00 · OVER by $2.00"
-        );
-    }
-
-    #[test]
-    fn the_state_knows_its_own_arithmetic() {
-        assert!(!state("9", "10").is_over());
-        assert!(!state("10", "10").is_over());
-        assert!(state("11", "10").is_over());
-        assert_eq!(state("4", "10").remainder(), Decimal::new(6, 0));
-    }
 
     #[test]
     fn the_overview_shows_both_streaks_next_to_the_active_days() {
@@ -314,14 +226,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
         terminal
             .draw(|frame| {
-                super::render_overview(
-                    frame,
-                    frame.area(),
-                    &snapshot,
-                    None,
-                    &Brand::default(),
-                    &theme,
-                );
+                super::render_overview(frame, frame.area(), &snapshot, &Brand::default(), &theme);
             })
             .unwrap();
 

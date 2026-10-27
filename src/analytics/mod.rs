@@ -258,27 +258,6 @@ fn saturating_sum(values: impl IntoIterator<Item = u64>) -> u64 {
         .fold(0u64, |total, value| total.saturating_add(value))
 }
 
-/// What the user has spent in the budget's month, and what the cap is.
-#[derive(Clone, Debug)]
-pub struct BudgetState {
-    pub cap: Decimal,
-    pub spend: PriceSummary,
-}
-
-impl BudgetState {
-    pub fn remainder(&self) -> Decimal {
-        self.cap - self.spend.known
-    }
-
-    pub fn is_over(&self) -> bool {
-        self.spend.known > self.cap
-    }
-}
-
-/// The window the budget is measured over: the same one the `30d` range shows, so the
-/// budget and the list pages agree about what the last month means.
-pub const BUDGET_WINDOW: TimeRange = TimeRange::Last30Days;
-
 /// The sessions whose project matches, resolved the same way session rows resolve it:
 /// the worktree's file name first, then the stored project name, compared without
 /// regard to case. A session with no project on any event never matches.
