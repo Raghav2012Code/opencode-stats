@@ -80,22 +80,34 @@ fn build_month_header(data: &HeatmapData, max_width: usize, skip: usize) -> Stri
     let mut next_free_column = ROW_LABEL_WIDTH;
     let newest = data.month_labels.last().map(|(week, _)| *week);
 
+    // Where the newest label will land when its own column is off the right edge. Those
+    // columns belong to it, so an older label that would sit there is dropped whole.
+    let newest_slide = data.month_labels.last().and_then(|(week_index, label)| {
+        let drawn_index = week_index.checked_sub(skip)?;
+        let label_width = label.chars().count();
+        let start = ROW_LABEL_WIDTH + drawn_index;
+        (start + label_width > width)
+            .then(|| (width.saturating_sub(label_width), label_width))
+    });
+
+    let mut newest_label = None;
     for (week_index, label) in &data.month_labels {
+        if Some(*week_index) == newest {
+            newest_label = Some((week_index, label));
+            continue;
+        }
         let Some(drawn_index) = week_index.checked_sub(skip) else {
             continue;
         };
         let label_width = label.chars().count();
-        let mut start = ROW_LABEL_WIDTH + drawn_index;
+        let start = ROW_LABEL_WIDTH + drawn_index;
+        let overlaps_newest = newest_slide
+            .is_some_and(|(slide, slide_width)| start < slide + slide_width && slide < start + label_width);
 
         // A label that would run past the visible width is dropped whole: a cut-off
         // "Sep" reading as "S" looks like a missing month, while a missing label is
-        // just a quieter header. The newest month is the one a glance wants, so it
-        // slides left into the last columns instead of vanishing.
-        if start + label_width > width && Some(*week_index) == newest {
-            start = width.saturating_sub(label_width);
-        }
-
-        if start < next_free_column || start + label_width > width {
+        // just a quieter header.
+        if overlaps_newest || start < next_free_column || start + label_width > width {
             continue;
         }
 
@@ -104,6 +116,23 @@ fn build_month_header(data: &HeatmapData, max_width: usize, skip: usize) -> Stri
         }
 
         next_free_column = start + label_width + 1;
+    }
+
+    // The newest month is the one a glance wants, so it slides left into the last
+    // columns instead of vanishing.
+    if let Some((week_index, label)) = newest_label
+        && let Some(drawn_index) = week_index.checked_sub(skip)
+    {
+        let label_width = label.chars().count();
+        let mut start = ROW_LABEL_WIDTH + drawn_index;
+        if start + label_width > width {
+            start = width.saturating_sub(label_width);
+        }
+        if start >= next_free_column && start + label_width <= width {
+            for (offset, ch) in label.chars().enumerate() {
+                header[start + offset] = ch;
+            }
+        }
     }
 
     header.into_iter().collect()
