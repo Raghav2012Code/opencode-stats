@@ -75,35 +75,35 @@ pub fn heatmap_legend_line(theme: &Theme) -> Line<'static> {
 /// The month names over the drawn weeks. `skip` leading weeks are not drawn, and the
 /// labels that belong to them are not either.
 fn build_month_header(data: &HeatmapData, max_width: usize, skip: usize) -> String {
-    let width = max_width.min(ROW_LABEL_WIDTH + data.weeks.len().saturating_sub(skip));
+    let width = max_width;
     let mut header = vec![' '; width];
     let mut next_free_column = ROW_LABEL_WIDTH;
+    let newest = data.month_labels.last().map(|(week, _)| *week);
 
     for (week_index, label) in &data.month_labels {
         let Some(drawn_index) = week_index.checked_sub(skip) else {
             continue;
         };
-        let start = ROW_LABEL_WIDTH + drawn_index;
-        if start < next_free_column || start >= width {
-            continue;
-        }
+        let label_width = label.chars().count();
+        let mut start = ROW_LABEL_WIDTH + drawn_index;
 
         // A label that would run past the visible width is dropped whole: a cut-off
         // "Sep" reading as "S" looks like a missing month, while a missing label is
-        // just a quieter header.
-        if start + label.chars().count() > width {
+        // just a quieter header. The newest month is the one a glance wants, so it
+        // slides left into the last columns instead of vanishing.
+        if start + label_width > width && Some(*week_index) == newest {
+            start = width.saturating_sub(label_width);
+        }
+
+        if start < next_free_column || start + label_width > width {
             continue;
         }
 
         for (offset, ch) in label.chars().enumerate() {
-            let column = start + offset;
-            if column >= width {
-                break;
-            }
-            header[column] = ch;
+            header[start + offset] = ch;
         }
 
-        next_free_column = start + label.chars().count() + 1;
+        next_free_column = start + label_width + 1;
     }
 
     header.into_iter().collect()
@@ -285,6 +285,36 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn the_newest_month_slides_left_instead_of_disappearing() {
+        // On 2026-11-03 the last label is Nov 2026, on the final of 53 columns. It
+        // cannot start there, but the current month must not vanish from the header.
+        let theme = Theme::builtin_dark();
+        let weeks = (0..53)
+            .map(|_| {
+                (0..7)
+                    .map(|_| HeatmapCell {
+                        intensity: 0,
+                        is_future: false,
+                    })
+                    .collect()
+            })
+            .collect();
+        let data = HeatmapData {
+            weeks,
+            month_labels: vec![(48, "Oct".to_string()), (52, "Nov".to_string())],
+        };
+
+        // A panel wider than the 57-column grid keeps the true column (4 + 52).
+        let wide = header_row(&data, &theme, 80);
+        assert_eq!(wide.find("Nov"), Some(56), "{wide:?}");
+
+        // At the grid's own width the label moves left just enough to fit whole.
+        let tight = header_row(&data, &theme, 57);
+        assert_eq!(tight.find("Nov"), Some(54), "{tight:?}");
+        assert!(tight.ends_with("Nov"), "{tight:?}");
+    }
+
     #[test]
     fn a_narrow_heatmap_keeps_the_newest_weeks_on_screen() {
         // Twenty weeks, the last one busy. At 14 columns only the last ten weeks fit, so

@@ -5,18 +5,6 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::ui::theme::Theme;
 
-pub const CONTENT_WIDTH: u16 = 70;
-
-pub fn left_aligned_content(area: Rect) -> Rect {
-    let width = CONTENT_WIDTH.min(area.width);
-    Rect {
-        x: area.x,
-        y: area.y,
-        width,
-        height: area.height,
-    }
-}
-
 pub fn segment_span(label: &str, active: bool, theme: &Theme) -> Span<'static> {
     let style = if active {
         Style::default()

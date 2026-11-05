@@ -28,7 +28,7 @@ use crate::ui::overview::render_overview;
 use crate::ui::sessions::render_sessions;
 use crate::ui::share::{ClipboardSink, ShareJob, SystemClipboard, perform_share};
 use crate::ui::theme::{Theme, ThemeKind};
-use crate::ui::widgets::common::{CONTENT_WIDTH, left_aligned_content, segment_span};
+use crate::ui::widgets::common::{segment_span};
 use crate::utils::formatting::format_price_summary;
 use crate::utils::pricing::ZeroCostBehavior;
 use crate::utils::time::{TimeRange, current_local_date};
@@ -558,8 +558,7 @@ impl App {
             Constraint::Length(1),
         ]);
 
-        let [divider, header, spacer, body, footer] =
-            vertical.areas(area).map(left_aligned_content);
+        let [divider, header, spacer, body, footer] = vertical.areas(area);
         let [header, body, footer] = [header, body, footer]
             .map(|area| Block::new().padding(Padding::horizontal(1)).inner(area));
 
