@@ -34,6 +34,8 @@ use crate::utils::pricing::ZeroCostBehavior;
 use crate::utils::time::{TimeRange, current_local_date};
 
 const VIEWPORT_HEIGHT: u16 = 23;
+/// The width share-card captures use, independent of the terminal's own width.
+const CONTENT_WIDTH: u16 = 70;
 const STATUS_TTL: Duration = Duration::from_secs(3);
 /// A copy result names a file the user may want to read or open, so it is not the 3-second
 /// flash used for passing notices.
@@ -1265,6 +1267,15 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn the_share_card_capture_uses_the_fixed_content_width() {
+        let app = test_app(test_data(Vec::new()), no_input_options());
+        let buffer = app.capture_current_page_buffer().unwrap();
+
+        assert_eq!(buffer.area.width, CONTENT_WIDTH);
+        assert_eq!(buffer.area.height, VIEWPORT_HEIGHT);
     }
 
     fn an_event_dated(days_ago: i64) -> UsageEvent {
