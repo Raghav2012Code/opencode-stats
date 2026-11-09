@@ -7,7 +7,7 @@ use color_eyre::eyre::Result;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::style::{StyledContent, Stylize};
 use futures::StreamExt;
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::prelude::CrosstermBackend;
 use ratatui::widgets::{Block, Padding};
 use ratatui::{DefaultTerminal, Frame, Terminal, TerminalOptions, Viewport, backend::TestBackend};
@@ -37,6 +37,9 @@ use crate::utils::time::{TimeRange, current_local_date};
 const VIEWPORT_HEIGHT: u16 = 23;
 /// The width share-card captures use, independent of the terminal's own width.
 const CONTENT_WIDTH: u16 = 70;
+/// The widest canvas the dashboard draws into. A wider terminal leaves the extra space
+/// blank instead of stretching the divider, tables and stats apart.
+const MAX_CONTENT_WIDTH: u16 = 110;
 const STATUS_TTL: Duration = Duration::from_secs(3);
 /// A copy result names a file the user may want to read or open, so it is not the 3-second
 /// flash used for passing notices.
@@ -563,6 +566,10 @@ impl App {
     fn render(&self, frame: &mut Frame<'_>) {
         let theme = &self.theme;
         let area = frame.area();
+        let area = Rect {
+            width: area.width.min(MAX_CONTENT_WIDTH),
+            ..area
+        };
         let vertical = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(1),
@@ -1306,6 +1313,25 @@ mod tests {
 
         assert_eq!(buffer.area.width, CONTENT_WIDTH);
         assert_eq!(buffer.area.height, VIEWPORT_HEIGHT);
+    }
+
+    #[test]
+    fn a_wide_terminal_leaves_the_extra_columns_blank() {
+        let app = app_with(Page::Overview, TimeRange::All, vec![test_event()]);
+        let width = MAX_CONTENT_WIDTH + 60;
+        let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        for y in 0..buffer.area.height {
+            for x in MAX_CONTENT_WIDTH..buffer.area.width {
+                let symbol = buffer
+                    .cell((x, y))
+                    .map(|cell| cell.symbol())
+                    .unwrap_or(" ");
+                assert_eq!(symbol, " ", "cell ({x}, {y}) is drawn past the canvas");
+            }
+        }
     }
 
     fn an_event_dated(days_ago: i64) -> UsageEvent {
