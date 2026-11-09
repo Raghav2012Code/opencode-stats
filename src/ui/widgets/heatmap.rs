@@ -73,65 +73,31 @@ pub fn heatmap_legend_line(theme: &Theme) -> Line<'static> {
 }
 
 /// The month names over the drawn weeks. `skip` leading weeks are not drawn, and the
-/// labels that belong to them are not either.
+/// labels that belong to them are not either. The layout runs from the newest month
+/// backwards: the right edge is what a glance wants, so when the panel is too narrow
+/// the newest label keeps its place and the ones before it slide left, never cut.
 fn build_month_header(data: &HeatmapData, max_width: usize, skip: usize) -> String {
-    let width = max_width;
-    let mut header = vec![' '; width];
-    let mut next_free_column = ROW_LABEL_WIDTH;
-    let newest = data.month_labels.last().map(|(week, _)| *week);
+    let mut header = vec![' '; max_width];
+    let mut placed = Vec::new();
+    let mut limit = max_width;
 
-    // Where the newest label will land when its own column is off the right edge. Those
-    // columns belong to it, so an older label that would sit there is dropped whole.
-    let newest_slide = data.month_labels.last().and_then(|(week_index, label)| {
-        let drawn_index = week_index.checked_sub(skip)?;
-        let label_width = label.chars().count();
-        let start = ROW_LABEL_WIDTH + drawn_index;
-        (start + label_width > width)
-            .then(|| (width.saturating_sub(label_width), label_width))
-    });
-
-    let mut newest_label = None;
-    for (week_index, label) in &data.month_labels {
-        if Some(*week_index) == newest {
-            newest_label = Some((week_index, label));
-            continue;
-        }
+    for (week_index, label) in data.month_labels.iter().rev() {
         let Some(drawn_index) = week_index.checked_sub(skip) else {
             continue;
         };
         let label_width = label.chars().count();
-        let start = ROW_LABEL_WIDTH + drawn_index;
-        let overlaps_newest = newest_slide
-            .is_some_and(|(slide, slide_width)| start < slide + slide_width && slide < start + label_width);
-
-        // A label that would run past the visible width is dropped whole: a cut-off
-        // "Sep" reading as "S" looks like a missing month, while a missing label is
-        // just a quieter header.
-        if overlaps_newest || start < next_free_column || start + label_width > width {
-            continue;
+        let start = (ROW_LABEL_WIDTH + drawn_index).min(limit.saturating_sub(label_width));
+        if start < ROW_LABEL_WIDTH {
+            break;
         }
-
-        for (offset, ch) in label.chars().enumerate() {
-            header[start + offset] = ch;
-        }
-
-        next_free_column = start + label_width + 1;
+        placed.push((start, label));
+        // One blank column between neighbours.
+        limit = start.saturating_sub(1);
     }
 
-    // The newest month is the one a glance wants, so it slides left into the last
-    // columns instead of vanishing.
-    if let Some((week_index, label)) = newest_label
-        && let Some(drawn_index) = week_index.checked_sub(skip)
-    {
-        let label_width = label.chars().count();
-        let mut start = ROW_LABEL_WIDTH + drawn_index;
-        if start + label_width > width {
-            start = width.saturating_sub(label_width);
-        }
-        if start >= next_free_column && start + label_width <= width {
-            for (offset, ch) in label.chars().enumerate() {
-                header[start + offset] = ch;
-            }
+    for (start, label) in placed.into_iter().rev() {
+        for (offset, ch) in label.chars().enumerate() {
+            header[start + offset] = ch;
         }
     }
 
@@ -341,6 +307,25 @@ mod tests {
         // At the grid's own width the label moves left just enough to fit whole.
         let tight = header_row(&data, &theme, 57);
         assert_eq!(tight.find("Nov"), Some(54), "{tight:?}");
+        assert!(tight.ends_with("Nov"), "{tight:?}");
+    }
+
+    #[test]
+    fn the_newest_month_fits_beside_a_label_one_column_away() {
+        // On 2026-11-09 the newest label lands one column earlier than on the 3rd,
+        // right against the label before it. That neighbour must give way by one
+        // column; the newest month must not vanish instead.
+        let theme = Theme::builtin_dark();
+        let mut data = full_year_labels();
+        data.month_labels = vec![(47, "Oct".to_string()), (51, "Nov".to_string())];
+
+        let wide = header_row(&data, &theme, 80);
+        assert_eq!(wide.find("Nov"), Some(55), "{wide:?}");
+        assert_eq!(wide.find("Oct"), Some(51), "{wide:?}");
+
+        let tight = header_row(&data, &theme, 57);
+        assert_eq!(tight.find("Nov"), Some(54), "{tight:?}");
+        assert_eq!(tight.find("Oct"), Some(50), "{tight:?}");
         assert!(tight.ends_with("Nov"), "{tight:?}");
     }
 
