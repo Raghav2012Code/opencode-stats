@@ -12,6 +12,7 @@ use ratatui::prelude::CrosstermBackend;
 use ratatui::widgets::{Block, Padding};
 use ratatui::{DefaultTerminal, Frame, Terminal, TerminalOptions, Viewport, backend::TestBackend};
 use tokio::sync::mpsc;
+use unicode_width::UnicodeWidthStr;
 
 use crate::analytics::model_stats::UsageRow;
 use crate::analytics::view::View;
@@ -545,6 +546,16 @@ impl App {
         // New data invalidates every cached range.
         self.snapshot_cache.clear();
         self.recompute();
+        // The old focus may point past the rows that just landed; clamp it so the
+        // detail pane still describes a row instead of reading as no activity.
+        let rows = match self.page {
+            Page::Models => self.snapshot.models.len(),
+            Page::Providers => self.snapshot.providers.len(),
+            Page::Sessions => self.snapshot.sessions.len(),
+            Page::Overview => 0,
+        };
+        self.focused_index = self.focused_index.min(rows.saturating_sub(1));
+        self.refresh_search();
         self.last_read = Local::now();
         self.set_status("Reloaded usage data from disk");
     }
@@ -726,7 +737,7 @@ impl App {
             "{LOADED_LABEL}{}",
             self.last_read.format("%H:%M:%S")
         ));
-        let stamp_width = stamp.chars().count() + 2;
+        let stamp_width = UnicodeWidthStr::width(stamp.as_str()) + 2;
         let rule_width = (width as usize).saturating_sub(stamp_width);
 
         ratatui::text::Line::from(vec![
@@ -906,6 +917,23 @@ impl App {
     fn update_search_filter(&mut self) {
         if let Some(search) = self.search.as_mut() {
             search.update_filter();
+        }
+    }
+
+    /// Rebuilds the open find over the rows that just landed, keeping the query: the
+    /// old result indices and haystacks describe data that has been replaced.
+    fn refresh_search(&mut self) {
+        let Some(search) = self.search.as_ref() else {
+            return;
+        };
+        let query = search.query.clone();
+        let selected = search.selected;
+        self.enter_search();
+        if let Some(search) = self.search.as_mut() {
+            search.query = query;
+            search.update_filter();
+            search.selected = selected.min(search.filtered_indices.len().saturating_sub(1));
+            search.scroll_offset = search.selected.saturating_sub(4);
         }
     }
 
@@ -1748,6 +1776,37 @@ mod tests {
     }
 
     #[test]
+    fn a_wide_project_name_does_not_push_the_read_time_off_the_rule() {
+        let app = App::new(
+            test_data(Vec::new()),
+            test_pricing(),
+            Theme::builtin_dark(),
+            ZeroCostBehavior::KeepZero,
+            no_input_options(),
+            Page::Overview,
+            TimeRange::All,
+            View {
+                project: Some("项目".to_string()),
+                pinned_models: Vec::new(),
+                pinned_providers: Vec::new(),
+            },
+            Brand::default(),
+            None,
+        );
+        let time = app.last_read.format("%H:%M:%S").to_string();
+        let rule = frame_text(&app, 32, 24)
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_string();
+
+        assert!(
+            rule.contains(&time),
+            "the read time must stay whole beside a wide project name: {rule:?}"
+        );
+    }
+
+    #[test]
     fn the_read_time_rides_the_rule_and_leaves_the_footer_to_the_hints() {
         let app = app_with(Page::Models, TimeRange::All, vec![test_event()]);
         let frame = frame_text(&app, 100, 24);
@@ -1892,6 +1951,46 @@ mod tests {
             frame.contains("tab") && frame.contains("pages"),
             "the hints return: {frame}"
         );
+    }
+
+    #[test]
+    fn a_reload_clamps_a_focus_past_the_new_rows() {
+        let mut richer = test_event();
+        richer.model_id = "claude-4".to_string();
+        let mut app = app_with(
+            Page::Models,
+            TimeRange::All,
+            vec![test_event(), richer],
+        );
+        app.focused_index = 1;
+
+        app.finish_reload(test_data(vec![test_event()]));
+
+        assert_eq!(app.focused_index, 0);
+        let frame = frame_text(&app, 100, 24);
+        assert!(frame.contains("gpt-5"), "{frame}");
+        assert!(
+            !frame.contains("No model activity"),
+            "the remaining row must still have its detail: {frame}"
+        );
+    }
+
+    #[test]
+    fn a_reload_rebuilds_an_open_search_over_the_new_rows() {
+        let mut app = app_with(Page::Models, TimeRange::All, vec![test_event()]);
+        app.enter_search();
+        app.search.as_mut().unwrap().query = "gpt".to_string();
+        app.update_search_filter();
+
+        // The old result indices point at rows that are about to disappear.
+        app.finish_reload(test_data(Vec::new()));
+
+        let search = app.search.as_ref().expect("the find panel stays open");
+        assert_eq!(search.query, "gpt", "the typed query is kept");
+        assert!(search.filtered_indices.is_empty());
+        // Rendering the stale indices would panic before the rebuild.
+        let frame = frame_text(&app, 100, 24);
+        assert!(frame.contains("0/0"), "{frame}");
     }
 
     #[test]
