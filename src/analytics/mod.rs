@@ -183,7 +183,7 @@ pub fn build_snapshot_view(
             current_streak: overall_streaks.current,
             longest_streak: overall_streaks.longest,
             fun_comparison: crate::utils::formatting::tokens_comparison_text(
-                input_tokens + output_tokens,
+                input_tokens.saturating_add(output_tokens),
             ),
         },
         models,
@@ -260,10 +260,11 @@ fn saturating_sum(values: impl IntoIterator<Item = u64>) -> u64 {
 /// the worktree's file name first, then the stored project name, compared without
 /// regard to case. A session with no project on any event never matches.
 fn sessions_in_project(events: &[UsageEvent], project: &str) -> BTreeSet<String> {
+    let project = project.to_lowercase();
     events
         .iter()
         .filter(|event| {
-            session_project(event).is_some_and(|name| name.eq_ignore_ascii_case(project))
+            session_project(event).is_some_and(|name| name.to_lowercase() == project)
         })
         .map(|event| event.session_id.clone())
         .collect()
@@ -590,6 +591,26 @@ mod tests {
     }
 
     #[test]
+    fn the_fun_comparison_saturates_instead_of_overflowing() {
+        let mut event = event_with("gpt-5", "openai", Some(Decimal::ZERO), u64::MAX);
+        event.tokens.output = u64::MAX;
+
+        let snapshot = build_snapshot(
+            &AppData {
+                events: vec![event],
+                messages: Vec::new(),
+                session_records: Vec::new(),
+                import_stats: ImportStats::default(),
+            },
+            &empty_catalog(),
+            TimeRange::All,
+            ZeroCostBehavior::KeepZero,
+        );
+
+        assert!(!snapshot.overview.fun_comparison.is_empty());
+    }
+
+    #[test]
     fn the_default_view_changes_nothing() {
         let data = two_models_and_an_unpriced_one();
         let catalog = empty_catalog();
@@ -683,6 +704,27 @@ mod tests {
             );
             assert_eq!(filtered.overview.sessions, 2, "filter {name:?}");
         }
+    }
+
+    #[test]
+    fn project_matching_folds_non_ascii_case_too() {
+        let data = AppData {
+            events: vec![event_in(Some("Café"), None)],
+            messages: Vec::new(),
+            session_records: Vec::new(),
+            import_stats: ImportStats::default(),
+        };
+
+        let filtered = super::build_snapshot_view(
+            &data,
+            &empty_catalog(),
+            TimeRange::All,
+            ZeroCostBehavior::KeepZero,
+            project_view("café"),
+        );
+
+        assert_eq!(filtered.overview.sessions, 1);
+        assert_eq!(filtered.overview.total_tokens, 10);
     }
 
     #[test]
