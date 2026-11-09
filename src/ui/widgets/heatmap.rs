@@ -330,6 +330,33 @@ mod tests {
     }
 
     #[test]
+    fn a_full_year_keeps_both_novembers_at_grid_width() {
+        // The rolling year that started this: Nov 2025 at the left edge and Nov 2026
+        // on the final column. Both ends must stay labelled.
+        let theme = Theme::builtin_dark();
+        let mut data = full_year_labels();
+        data.month_labels = vec![
+            (0, "Nov".to_string()),
+            (4, "Dec".to_string()),
+            (9, "Jan".to_string()),
+            (13, "Feb".to_string()),
+            (17, "Mar".to_string()),
+            (22, "Apr".to_string()),
+            (26, "May".to_string()),
+            (30, "Jun".to_string()),
+            (35, "Jul".to_string()),
+            (39, "Aug".to_string()),
+            (44, "Sep".to_string()),
+            (48, "Oct".to_string()),
+            (52, "Nov".to_string()),
+        ];
+
+        let row = header_row(&data, &theme, 57);
+        assert_eq!(row.matches("Nov").count(), 2, "{row:?}");
+        assert!(row.ends_with("Nov"), "{row:?}");
+    }
+
+    #[test]
     fn a_narrow_heatmap_keeps_the_newest_weeks_on_screen() {
         // Twenty weeks, the last one busy. At 14 columns only the last ten weeks fit, so
         // the busy week has to be the rightmost cell of the Monday row.
