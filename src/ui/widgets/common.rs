@@ -25,6 +25,12 @@ pub fn truncate_label(value: &str, max_columns: usize) -> String {
         return value.to_string();
     }
 
+    // Below three columns there is no room for the ellipsis: keep the cell inside its
+    // budget rather than widening it to fit "...".
+    if max_columns < 3 {
+        return ".".repeat(max_columns);
+    }
+
     let budget = max_columns.saturating_sub(3);
     let mut truncated = String::new();
     let mut used = 0;
@@ -79,4 +85,23 @@ pub fn metric_line_within<'a>(
 ) -> Line<'a> {
     let room = columns.saturating_sub(UnicodeWidthStr::width(label));
     metric_line(label, truncate_label(&value, room), theme)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_label;
+    use unicode_width::UnicodeWidthStr;
+
+    #[test]
+    fn truncation_never_widens_a_cell_past_its_budget() {
+        for max_columns in 0usize..6 {
+            for value in ["", "a", "abc", "修复登录"] {
+                let shortened = truncate_label(value, max_columns);
+                assert!(
+                    UnicodeWidthStr::width(shortened.as_str()) <= max_columns,
+                    "{value:?} at {max_columns} columns became {shortened:?}"
+                );
+            }
+        }
+    }
 }
