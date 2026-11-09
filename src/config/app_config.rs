@@ -136,8 +136,14 @@ fn parse_duration(value: &toml::Value) -> std::result::Result<std::time::Duratio
             }
             match unit {
                 "s" => Ok(std::time::Duration::from_secs(number)),
-                "m" => Ok(std::time::Duration::from_secs(number * 60)),
-                "h" => Ok(std::time::Duration::from_secs(number * 60 * 60)),
+                "m" => number
+                    .checked_mul(60)
+                    .map(std::time::Duration::from_secs)
+                    .ok_or(HINT),
+                "h" => number
+                    .checked_mul(60 * 60)
+                    .map(std::time::Duration::from_secs)
+                    .ok_or(HINT),
                 _ => Err(HINT),
             }
         }
@@ -434,6 +440,14 @@ db = "/tmp/opencode.db"
             let message = format!("{}", parsed.app.reload_interval().unwrap_err());
             assert!(message.contains("[app] reload_every"), "{text}: {message}");
         }
+    }
+
+    #[test]
+    fn a_duration_too_large_for_its_unit_is_an_error_not_an_overflow() {
+        let parsed: AppConfig =
+            toml::from_str("[app]\nreload_every = \"18446744073709551615h\"\n").unwrap();
+
+        assert!(parsed.app.reload_interval().is_err());
     }
 
     #[test]

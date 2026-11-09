@@ -159,7 +159,7 @@ fn parse_hex_color(value: &str) -> Result<Color> {
         .strip_prefix('#')
         .ok_or_else(|| Error::invalid_color(raw))?;
 
-    if hex.len() != 6 {
+    if hex.len() != 6 || !hex.is_ascii() {
         return Err(Error::invalid_color(raw));
     }
 
@@ -205,6 +205,14 @@ mod tests {
     fn parses_hex_colors() {
         assert_eq!(parse_hex_color("#010203").unwrap(), Color::Rgb(1, 2, 3));
         assert!(parse_hex_color("010203").is_err());
+    }
+
+    #[test]
+    fn a_multibyte_color_is_rejected_instead_of_panicking() {
+        // Six bytes, but the first character spans three of them: slicing by byte
+        // offsets must not split it.
+        assert!(parse_hex_color("#€abc").is_err());
+        assert!(parse_hex_color("#éabcd").is_err());
     }
 
     #[test]
