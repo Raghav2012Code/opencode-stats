@@ -1265,6 +1265,8 @@ mod tests {
     fn no_input_options() -> InputOptions {
         InputOptions {
             database_path: None,
+            hermes_path: None,
+            pi_sessions_dir: None,
         }
     }
 

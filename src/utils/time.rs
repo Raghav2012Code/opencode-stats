@@ -71,6 +71,19 @@ pub fn timestamp_ms_to_local(timestamp_ms: i64) -> Option<DateTime<Local>> {
     Local.timestamp_millis_opt(timestamp_ms).single()
 }
 
+/// Hermes stores Unix timestamps as fractional seconds; NaN and infinities are rejected
+/// here rather than clamped into a misleading instant.
+pub fn timestamp_secs_to_local(timestamp_secs: f64) -> Option<DateTime<Local>> {
+    if !timestamp_secs.is_finite() {
+        return None;
+    }
+    let millis = (timestamp_secs * 1000.0).round();
+    if millis < i64::MIN as f64 || millis > i64::MAX as f64 {
+        return None;
+    }
+    Local.timestamp_millis_opt(millis as i64).single()
+}
+
 pub fn current_local_date() -> NaiveDate {
     Local::now().date_naive()
 }
@@ -85,6 +98,15 @@ pub fn in_range(date: NaiveDate, range: TimeRange, today: NaiveDate) -> bool {
 #[cfg(test)]
 mod tests {
     use super::TimeRange;
+
+    #[test]
+    fn epoch_seconds_convert_to_local() {
+        let converted = super::timestamp_secs_to_local(1_710_000_000.75).unwrap();
+        assert_eq!(converted.timestamp_millis(), 1_710_000_000_750);
+        assert!(super::timestamp_secs_to_local(f64::NAN).is_none());
+        assert!(super::timestamp_secs_to_local(f64::INFINITY).is_none());
+        assert!(super::timestamp_secs_to_local(1e300).is_none());
+    }
 
     #[test]
     fn short_labels_match_the_header_strip() {

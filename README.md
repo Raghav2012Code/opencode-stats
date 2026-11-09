@@ -13,7 +13,7 @@ A terminal dashboard for OpenCode usage statistics.
 
 <img src="images/overview.png" alt="screenshot" style="zoom:50%;" />
 
-`oc-stats` reads your local OpenCode SQLite database and displays token usage, cost estimates, model and provider distributions, and a 365-day activity heatmap directly in your terminal. Inspired by Claude Code's `/stats` command, this is an independent implementation focused on local execution, export, and shareability.
+`oc-stats` reads your local OpenCode SQLite database (and, when present, Hermes' usage store) and displays token usage, cost estimates, model and provider distributions, and a 365-day activity heatmap directly in your terminal. Inspired by Claude Code's `/stats` command, this is an independent implementation focused on local execution, export, and shareability.
 
 > If you're already using OpenCode and want a quick view of your usage, costs, and activity trends, this tool is ready to go.
 >
@@ -28,6 +28,7 @@ This repository is **my personal fork** of [Cateds/opencode-stats](https://githu
 **Numbers you can trust**
 
 - Reads OpenCode's current `session_v2` and `session_message` tables, de-duplicates rows that also exist in the legacy `message` table, and counts `compaction` calls as billed usage. Upstream read the legacy tables alone, which on a migrated database hid most sessions and most of the cost.
+- Merges Hermes' recorded model usage and Pi's session files when they are present, so work done outside OpenCode still counts: tokens, cost and sessions join the OpenCode figures, while prompt and message counts stay OpenCode-only. `--no-hermes` and `--no-pi` turn each second source off.
 - Cost comes from what OpenCode stored for each row, so totals reconcile exactly against the database.
 - Free models are included, never filtered out: a model that cost nothing is still a row, and its tokens count towards every total.
 
@@ -71,7 +72,7 @@ Every change has tests, and the reported figures are cross-checked against indep
 ## Features
 
 - Terminal dashboard UI built on `ratatui`
-- Automatically reads the OpenCode local database
+- Automatically reads the OpenCode local database, plus Hermes and Pi usage when their stores are present
 - Displays total tokens, costs, session count, message count, prompt count, and other overview metrics
 - View usage breakdown by model and provider
 - Supports time ranges on the `Models`, `Providers` and `Sessions` pages: all time, last 7 days and last 30 days everywhere, plus today on `Sessions`; `Overview` always shows all time
@@ -187,6 +188,22 @@ By default, `oc-stats` keeps stored costs as-is, including `cost: 0`, to preserv
 oc-stats --ignore-zero
 ```
 
+### Leave Hermes out
+
+Hermes usage is merged automatically when its store is found. Pass `--no-hermes` to report OpenCode's numbers alone, for example when comparing against a snapshot.
+
+```bash
+oc-stats --no-hermes
+```
+
+### Leave Pi out
+
+Pi session usage is merged automatically when `~/.pi/agent/sessions` exists. Pass `--no-pi` to report the other sources alone.
+
+```bash
+oc-stats --no-pi
+```
+
 ### Configuration file
 
 Optional settings live in `config.toml` in the app config directory: `%APPDATA%\oc-stats\config.toml` on Windows, `~/.config/oc-stats/config.toml` on Linux and macOS. The file is never created for you; a missing file means the built-in defaults.
@@ -290,6 +307,28 @@ Default database locations, in the order they are checked:
 - macOS also: `~/Library/Application Support/opencode/opencode.db`
 
 Pass `--db` to point at another database, or set `[app] db` in `config.toml`. A named database is used or reported missing; it is never quietly replaced by one found in the default locations.
+
+#### Hermes usage
+
+When a Hermes store exists, `oc-stats` merges its recorded model usage as a second source. The store is read-only and found automatically; `--no-hermes` disables it. `--db` still selects the OpenCode database, and Hermes is merged alongside it unless the flag is passed.
+
+Store locations, in the order they are checked:
+
+- `%LOCALAPPDATA%\hermes\state.db` on Windows
+- `~/.local/share/hermes/state.db`
+- `~/.hermes/state.db`
+
+Only the `sessions` and `session_model_usage` tables are read. Hermes records one row per session, model and task, so its totals are exact, but a long session's tokens are attributed to the day it first ran. Only sessions that have usage are added to the session count; prompt and message counts never come from Hermes. A store that exists but cannot be read is named in the import summary and the rest of the dashboard keeps working. Cost is taken from Hermes when it recorded one, otherwise the pricing catalog estimates it, and free-tier models count as `$0`.
+
+#### Pi usage
+
+Pi keeps one JSONL file per session under `~/.pi/agent/sessions` (`C:\Users\<you>\.pi\agent\sessions` on Windows). When that directory exists, its assistant calls are merged as a third source; `--no-pi` disables it.
+
+- Every assistant message carries its own timestamp, so the heatmap attributes Pi usage to the exact day of each call.
+- Cost comes from the value Pi recorded for every call, including a free call at `$0`; if a call has no recorded cost, the pricing catalog estimates it.
+- The session title is the first user message, or `Pi <date>` when there is none. The project comes from the session's working directory.
+- Only sessions that produced usage are counted. Prompt and message counts stay OpenCode-only, matching the Hermes rule.
+- An unreadable or half-written session file is skipped, reported once in the import summary, and never fails a run.
 
 ### Pricing data
 

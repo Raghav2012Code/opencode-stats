@@ -108,6 +108,12 @@ pub struct AppData {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ImportStats {
     pub skipped_sqlite_messages: usize,
+    /// Set when a detected Hermes store could not be read, so a silent loss shows up.
+    #[serde(default)]
+    pub hermes_notice: Option<String>,
+    /// Set when Pi session files were skipped, so a silent loss shows up.
+    #[serde(default)]
+    pub pi_notice: Option<String>,
 }
 
 impl ImportStats {
@@ -119,6 +125,12 @@ impl ImportStats {
                 self.skipped_sqlite_messages,
                 pluralize(self.skipped_sqlite_messages, "message", "messages")
             ));
+        }
+        if let Some(notice) = &self.hermes_notice {
+            parts.push(notice.clone());
+        }
+        if let Some(notice) = &self.pi_notice {
+            parts.push(notice.clone());
         }
 
         (!parts.is_empty()).then(|| parts.join("; "))
@@ -162,6 +174,12 @@ mod tests {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InputOptions {
     pub database_path: Option<PathBuf>,
+    /// `None` leaves Hermes out. The CLI resolves it once, so reloads reuse the path.
+    #[serde(default)]
+    pub hermes_path: Option<PathBuf>,
+    /// `None` leaves Pi out. The CLI resolves it once, so reloads reuse the path.
+    #[serde(default)]
+    pub pi_sessions_dir: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

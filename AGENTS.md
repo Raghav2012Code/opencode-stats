@@ -12,6 +12,8 @@ Data flow: `db::queries::load_app_data` → `analytics::build_snapshot` → `ui:
 - Messages count `user` and `assistant` turns; prompts count `user` turns. `compaction` is usage only, never a message or a prompt
 - A turn with no model/provider attached counts toward its session's dominant model/provider; turns in sessions without usage stay overview- and sessions-only
 - Free models are never filtered out: a model that cost nothing is still a row, and its tokens count towards every total
+- Hermes usage is merged as a second source when its store has `sessions` and `session_model_usage`: usage events and session records only, never messages or prompts; `--no-hermes` disables it, and an unreadable store is a notice in `ImportStats`, not a failed run
+- Pi agent usage is merged as a third source from `~/.pi/agent/sessions` JSONL files: usage events and session records only, never messages or prompts; `--no-pi` disables it, and unreadable files are a notice, not a failed run
 - Default database paths, checked in this order: `~/.local/share/opencode/opencode.db` (every platform), then on Windows `%LOCALAPPDATA%\opencode\opencode.db` and `%APPDATA%\opencode\opencode.db`, on macOS `~/Library/Application Support/opencode/opencode.db`
 - After every change, reinstall the local binary so `oc-stats` in the terminal reports it: `cargo install --path . --force`, then confirm with `oc-stats --version`
 

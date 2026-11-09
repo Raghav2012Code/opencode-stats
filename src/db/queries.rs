@@ -5,10 +5,12 @@ use chrono::{DateTime, Local};
 
 use crate::db::connection::{self, discover_database_path, open_database};
 use crate::db::errors::{Error, Result};
+use crate::db::hermes;
 use crate::db::models::{
     AppData, ImportStats, InputOptions, JsonMessageRecord, MessageRecord, SessionRecord,
     TokenUsage, UsageEvent,
 };
+use crate::db::pi;
 use crate::utils::time::timestamp_ms_to_local;
 
 #[derive(Clone, Debug)]
@@ -29,7 +31,49 @@ pub fn load_app_data(options: &InputOptions) -> Result<AppData> {
             options.database_path.as_deref(),
         ))
     })?;
-    load_from_sqlite(&db_path)
+    let mut data = load_from_sqlite(&db_path)?;
+
+    if let Some(path) = options.hermes_path.as_deref() {
+        merge_hermes(&mut data, path);
+    }
+    if let Some(dir) = options.pi_sessions_dir.as_deref() {
+        merge_pi(&mut data, dir);
+    }
+    data.events.sort_by_key(|event| event.created_at);
+
+    Ok(data)
+}
+
+/// A second source only ever adds usage and sessions; a store that cannot be read is
+/// reported instead of failing the run, so one tool's upgrade cannot hide OpenCode's data.
+fn merge_hermes(data: &mut AppData, path: &Path) {
+    match hermes::load(path) {
+        Ok(load) => {
+            data.events.extend(load.events);
+            data.session_records.extend(load.sessions);
+        }
+        Err(err) => {
+            data.import_stats.hermes_notice = Some(format!("Hermes usage unavailable: {err}"));
+        }
+    }
+}
+
+/// Pi tolerates individual files; only the count of unreadable ones is reported.
+fn merge_pi(data: &mut AppData, dir: &Path) {
+    let load = pi::load(dir);
+    data.events.extend(load.events);
+    data.session_records.extend(load.sessions);
+    if load.skipped_files > 0 {
+        let noun = if load.skipped_files == 1 {
+            "file"
+        } else {
+            "files"
+        };
+        data.import_stats.pi_notice = Some(format!(
+            "Skipped {} unreadable Pi session {noun}",
+            load.skipped_files
+        ));
+    }
 }
 
 pub fn load_from_sqlite(db_path: &Path) -> Result<AppData> {
@@ -99,6 +143,8 @@ pub fn load_from_sqlite(db_path: &Path) -> Result<AppData> {
         session_records,
         ImportStats {
             skipped_sqlite_messages: sqlite_messages.skipped_messages,
+            hermes_notice: None,
+            pi_notice: None,
         },
     )
 }
@@ -536,13 +582,18 @@ fn finalize_app_data(
 
 #[cfg(test)]
 mod tests {
-    use super::{load_from_sqlite, parse_json_record};
+    use super::{load_app_data, load_from_sqlite, parse_json_record};
+    use crate::cache::models_cache::{PricingAvailability, PricingCatalog};
     use crate::db::models::{
-        JsonCacheTokensRecord, JsonMessageRecord, JsonPathRecord, JsonTimeRecord, JsonTokensRecord,
+        InputOptions, JsonCacheTokensRecord, JsonMessageRecord, JsonPathRecord, JsonTimeRecord,
+        JsonTokensRecord,
     };
-    use crate::test_support::unique_temp_path;
+    use crate::test_support::{unique_temp_dir, unique_temp_path};
+    use crate::utils::pricing::ZeroCostBehavior;
+    use crate::utils::time::TimeRange;
     use rusqlite::Connection;
     use std::fs;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn parses_assistant_json_record() {
@@ -838,5 +889,371 @@ mod tests {
         assert_eq!(data.events.len(), 1);
 
         let _ = fs::remove_file(db_path);
+    }
+
+    fn opencode_fixture(path: &Path) {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE project (id TEXT PRIMARY KEY, name TEXT, worktree TEXT);
+            CREATE TABLE session (
+                id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, title TEXT,
+                time_created INTEGER, time_updated INTEGER, time_archived INTEGER
+            );
+            CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, data TEXT, time_created INTEGER);
+            INSERT INTO project (id, name, worktree) VALUES ('proj_1', 'demo', '/tmp/demo');
+            INSERT INTO session (id, project_id, title, time_created, time_updated)
+                VALUES ('ses_open', 'proj_1', 'OpenCode', 1710000000000, 1710000001000);
+            ",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message (id, session_id, data) VALUES ('msg_open', 'ses_open', ?1)",
+            [r#"{"role":"assistant","providerID":"opencode-go","modelID":"deepseek-v4.1-flash","cost":0.25,"tokens":{"input":100,"output":10},"time":{"created":1710000000000,"completed":1710000001000}}"#],
+        )
+        .unwrap();
+    }
+
+    fn hermes_fixture(path: &Path) {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY, parent_session_id TEXT, title TEXT, cwd TEXT,
+                git_repo_root TEXT, started_at REAL NOT NULL, ended_at REAL,
+                last_activity_at REAL, billing_provider TEXT, model TEXT
+            );
+            CREATE TABLE session_model_usage (
+                session_id TEXT, model TEXT, billing_provider TEXT,
+                input_tokens INTEGER, output_tokens INTEGER,
+                cache_read_tokens INTEGER, cache_write_tokens INTEGER,
+                estimated_cost_usd REAL, actual_cost_usd REAL,
+                first_seen REAL, last_seen REAL
+            );
+            INSERT INTO sessions (id, parent_session_id, title, cwd, started_at, ended_at, billing_provider)
+                VALUES ('20261020_224127_bbdb38', 'parent_x', 'Hermes work',
+                        'C:/repo/hermes-project', 1710000100.5, 1710000200.5, 'opencode-go');
+            INSERT INTO sessions (id, title, started_at, ended_at, billing_provider)
+                VALUES ('20261021_000000_aaaaaa', NULL, 1710000300.0, 1710000400.0, 'opencode-go');
+            INSERT INTO sessions (id, title, started_at)
+                VALUES ('20261022_000000_bbbbbb', 'No usage', 1710000500.0);
+            ",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_model_usage VALUES
+             ('20261020_224127_bbdb38', 'deepseek-v4.1-flash', 'opencode-go',
+              200, 20, 0, 0, 0.0, 0.5, 1710000100.0, 1710000200.0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_model_usage VALUES
+             ('20261021_000000_aaaaaa', 'glm-5.3-flash', '',
+              300, 30, 0, 0, 0.0, 0.0, 1710000300.0, 1710000400.0)",
+            [],
+        )
+        .unwrap();
+        // A usage row without a model still proves its session did work.
+        conn.execute(
+            "INSERT INTO session_model_usage VALUES
+             ('20261021_000000_aaaaaa', '', 'opencode-go',
+              5, 5, 0, 0, 0.0, 0.0, 1710000300.0, 1710000400.0)",
+            [],
+        )
+        .unwrap();
+    }
+
+    fn empty_catalog() -> PricingCatalog {
+        PricingCatalog {
+            models: Default::default(),
+            cache_path: PathBuf::from("/tmp/models.json"),
+            refresh_needed: false,
+            availability: PricingAvailability::Empty,
+            load_notice: None,
+        }
+    }
+
+    #[test]
+    fn hermes_usage_joins_totals_sessions_and_attribution() {
+        let opencode = unique_temp_path("merge-open", ".db");
+        let hermes = unique_temp_path("merge-hermes", ".db");
+        opencode_fixture(&opencode);
+        hermes_fixture(&hermes);
+
+        let data = load_app_data(&InputOptions {
+            database_path: Some(opencode.clone()),
+            hermes_path: Some(hermes.clone()),
+            pi_sessions_dir: None,
+        })
+        .unwrap();
+
+        assert_eq!(data.events.len(), 3);
+        assert_eq!(
+            data.session_records.len(),
+            3,
+            "two Hermes sessions have usage"
+        );
+        assert!(data.import_stats.hermes_notice.is_none());
+
+        let hermes_events: Vec<_> = data
+            .events
+            .iter()
+            .filter(|event| event.session_id.starts_with("hermes:"))
+            .collect();
+        assert_eq!(hermes_events.len(), 2);
+
+        let recorded = hermes_events
+            .iter()
+            .find(|event| event.model_id == "deepseek-v4.1-flash")
+            .unwrap();
+        assert_eq!(recorded.session_id, "hermes:20261020_224127_bbdb38");
+        assert_eq!(
+            recorded.parent_session_id.as_deref(),
+            Some("hermes:parent_x")
+        );
+        assert_eq!(recorded.session_title.as_deref(), Some("Hermes work"));
+        assert_eq!(
+            recorded.project_path.as_deref(),
+            Some(Path::new("C:/repo/hermes-project"))
+        );
+        assert_eq!(
+            recorded.stored_cost_usd,
+            Some(rust_decimal::Decimal::new(5, 1))
+        );
+
+        let estimated = hermes_events
+            .iter()
+            .find(|event| event.model_id == "glm-5.3-flash")
+            .unwrap();
+        assert_eq!(
+            estimated.provider_id.as_deref(),
+            Some("opencode-go"),
+            "the session's provider wins when the row has none"
+        );
+        assert_eq!(estimated.stored_cost_usd, None, "unknown is not zero");
+        assert_eq!(estimated.session_title.as_deref(), Some("Hermes 20261021"));
+
+        let snapshot = crate::analytics::build_snapshot(
+            &data,
+            &empty_catalog(),
+            TimeRange::All,
+            ZeroCostBehavior::KeepZero,
+        );
+        assert_eq!(snapshot.overview.total_tokens, 660);
+        assert_eq!(snapshot.overview.sessions, 3);
+        assert_eq!(snapshot.overview.models_used, 2);
+        assert_eq!(snapshot.overview.messages, 1, "Hermes adds no messages");
+        assert_eq!(snapshot.overview.prompts, 0, "Hermes adds no prompts");
+        assert_eq!(
+            snapshot.overview.total_cost.known,
+            rust_decimal::Decimal::new(75, 2)
+        );
+
+        let _ = fs::remove_file(opencode);
+        let _ = fs::remove_file(hermes);
+    }
+
+    #[test]
+    fn merged_events_stay_ordered_by_creation() {
+        let opencode = unique_temp_path("order-open", ".db");
+        let hermes = unique_temp_path("order-hermes", ".db");
+        opencode_fixture(&opencode);
+        hermes_fixture(&hermes);
+
+        let data = load_app_data(&InputOptions {
+            database_path: Some(opencode.clone()),
+            hermes_path: Some(hermes.clone()),
+            pi_sessions_dir: None,
+        })
+        .unwrap();
+
+        let order: Vec<_> = data
+            .events
+            .iter()
+            .map(|event| event.created_at.unwrap())
+            .collect();
+        assert!(order.windows(2).all(|pair| pair[0] <= pair[1]));
+
+        let _ = fs::remove_file(opencode);
+        let _ = fs::remove_file(hermes);
+    }
+
+    #[test]
+    fn no_hermes_path_leaves_the_database_only_numbers() {
+        let opencode = unique_temp_path("no-hermes", ".db");
+        opencode_fixture(&opencode);
+
+        let data = load_app_data(&InputOptions {
+            database_path: Some(opencode.clone()),
+            hermes_path: None,
+            pi_sessions_dir: None,
+        })
+        .unwrap();
+
+        assert_eq!(data.events.len(), 1);
+        assert_eq!(data.session_records.len(), 1);
+        assert!(data.import_stats.summary().is_none());
+
+        let _ = fs::remove_file(opencode);
+    }
+
+    #[test]
+    fn an_unusable_hermes_store_is_reported_and_changes_nothing() {
+        let opencode = unique_temp_path("junk-open", ".db");
+        let hermes = unique_temp_path("junk-hermes", ".db");
+        opencode_fixture(&opencode);
+        fs::write(&hermes, b"this is not sqlite").unwrap();
+
+        let data = load_app_data(&InputOptions {
+            database_path: Some(opencode.clone()),
+            hermes_path: Some(hermes.clone()),
+            pi_sessions_dir: None,
+        })
+        .unwrap();
+
+        assert_eq!(data.events.len(), 1);
+        assert_eq!(data.session_records.len(), 1);
+        let summary = data.import_stats.summary().expect("a notice is surfaced");
+        assert!(summary.contains("Hermes"), "{summary}");
+
+        let _ = fs::remove_file(opencode);
+        let _ = fs::remove_file(hermes);
+    }
+
+    fn pi_fixture(dir: &Path) {
+        fs::write(
+            dir.join("2026-09-29_uuid-1.jsonl"),
+            concat!(
+                r#"{"type":"session","version":3,"id":"uuid-1","timestamp":"2026-09-29T13:33:02.776Z","cwd":"C:/repo/pi-project"}"#,
+                "\n",
+                r#"{"type":"model_change","id":"m0","timestamp":"2026-09-29T13:33:03.000Z","provider":"opencode-go","modelId":"deepseek-v4.1-flash"}"#,
+                "\n",
+                r#"{"type":"message","timestamp":"2026-09-29T13:33:05.000Z","message":{"role":"user","content":[{"type":"text","text":"Fix the flaky test\nsecond line"}]}}"#,
+                "\n",
+                r#"{"type":"message","timestamp":"2026-09-29T13:38:45.992Z","message":{"role":"assistant","provider":"opencode-go","model":"deepseek-v4.1-flash","usage":{"input":100,"output":10,"cacheRead":5,"cacheWrite":0,"reasoning":2,"totalTokens":115,"cost":{"total":0.5}}}}"#,
+            ),
+        )
+        .unwrap();
+
+        fs::write(
+            dir.join("2026-10-01_uuid-2.jsonl"),
+            concat!(
+                r#"{"type":"session","version":3,"id":"uuid-2","timestamp":"2026-10-01T08:00:00.000Z"}"#,
+                "\n",
+                r#"{"type":"message","timestamp":"2026-10-01T08:00:05.000Z","message":{"role":"assistant","provider":"opencode-go","model":"space-bunny-free","usage":{"input":50,"output":5,"cacheRead":0,"cacheWrite":0,"cost":{"total":0}}}}"#,
+                "\n",
+                // A file being appended to can end mid-line: the earlier call must survive.
+                r#"{"type":"message","timestamp":"2026-10-01T08:00:06.000Z","message":{"role":"assistant""#,
+            ),
+        )
+        .unwrap();
+
+        fs::write(
+            dir.join("2026-10-02_empty.jsonl"),
+            r#"{"type":"session","version":3,"id":"uuid-3","timestamp":"2026-10-02T08:00:00.000Z"}"#,
+        )
+        .unwrap();
+        fs::write(dir.join("junk.jsonl"), "this is not json").unwrap();
+    }
+
+    #[test]
+    fn pi_usage_joins_totals_sessions_and_titles() {
+        let opencode = unique_temp_path("pi-open", ".db");
+        let sessions = unique_temp_dir("pi-sessions");
+        opencode_fixture(&opencode);
+        pi_fixture(&sessions);
+
+        let data = load_app_data(&InputOptions {
+            database_path: Some(opencode.clone()),
+            hermes_path: None,
+            pi_sessions_dir: Some(sessions.clone()),
+        })
+        .unwrap();
+
+        assert_eq!(data.events.len(), 3, "one OpenCode call plus two Pi calls");
+        assert_eq!(
+            data.session_records.len(),
+            3,
+            "the usage-less Pi file is not a session"
+        );
+
+        let pi_events: Vec<_> = data
+            .events
+            .iter()
+            .filter(|event| event.session_id.starts_with("pi:"))
+            .collect();
+        assert_eq!(pi_events.len(), 2);
+
+        let titled = pi_events
+            .iter()
+            .find(|event| event.model_id == "deepseek-v4.1-flash")
+            .unwrap();
+        assert_eq!(titled.session_id, "pi:uuid-1");
+        assert_eq!(titled.session_title.as_deref(), Some("Fix the flaky test"));
+        assert_eq!(
+            titled.project_path.as_deref(),
+            Some(Path::new("C:/repo/pi-project"))
+        );
+        assert_eq!(titled.tokens.total(), 115);
+        assert_eq!(
+            titled.stored_cost_usd,
+            Some(rust_decimal::Decimal::new(5, 1))
+        );
+
+        let free = pi_events
+            .iter()
+            .find(|event| event.model_id == "space-bunny-free")
+            .unwrap();
+        assert_eq!(free.session_title.as_deref(), Some("Pi 2026-10-01"));
+        assert_eq!(free.stored_cost_usd, Some(rust_decimal::Decimal::ZERO));
+        assert_eq!(free.project_path, None);
+
+        let summary = data.import_stats.summary().expect("a notice is surfaced");
+        assert!(summary.contains("Pi"), "{summary}");
+
+        let snapshot = crate::analytics::build_snapshot(
+            &data,
+            &empty_catalog(),
+            TimeRange::All,
+            ZeroCostBehavior::KeepZero,
+        );
+        assert_eq!(snapshot.overview.total_tokens, 280);
+        assert_eq!(snapshot.overview.sessions, 3);
+        assert_eq!(snapshot.overview.messages, 1, "Pi adds no messages");
+        assert_eq!(snapshot.overview.prompts, 0, "Pi adds no prompts");
+        assert_eq!(
+            snapshot.overview.total_cost.known,
+            rust_decimal::Decimal::new(75, 2)
+        );
+        assert!(!snapshot.overview.total_cost.missing);
+
+        let _ = fs::remove_file(opencode);
+        let _ = fs::remove_dir_all(sessions);
+    }
+
+    #[test]
+    fn pi_events_stay_ordered_across_sources() {
+        let opencode = unique_temp_path("pi-order-open", ".db");
+        let sessions = unique_temp_dir("pi-order-sessions");
+        opencode_fixture(&opencode);
+        pi_fixture(&sessions);
+
+        let data = load_app_data(&InputOptions {
+            database_path: Some(opencode.clone()),
+            hermes_path: None,
+            pi_sessions_dir: Some(sessions.clone()),
+        })
+        .unwrap();
+
+        let order: Vec<_> = data
+            .events
+            .iter()
+            .map(|event| event.created_at.unwrap())
+            .collect();
+        assert!(order.windows(2).all(|pair| pair[0] <= pair[1]));
+
+        let _ = fs::remove_file(opencode);
+        let _ = fs::remove_dir_all(sessions);
     }
 }

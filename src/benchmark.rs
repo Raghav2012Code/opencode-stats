@@ -232,6 +232,8 @@ fn baseline_cold_start_and_find_filter_timing() {
     let load_start = Instant::now();
     let data = load_app_data(&InputOptions {
         database_path: Some(db_path.clone()),
+        hermes_path: None,
+        pi_sessions_dir: None,
     })
     .expect("the benchmark database must load");
     let load_ms = load_start.elapsed().as_secs_f64() * 1000.0;
@@ -255,6 +257,8 @@ fn baseline_cold_start_and_find_filter_timing() {
         ZeroCostBehavior::KeepZero,
         InputOptions {
             database_path: None,
+            hermes_path: None,
+            pi_sessions_dir: None,
         },
         Page::Models,
         TimeRange::Last7Days,

@@ -47,19 +47,42 @@ async fn main() -> Result<()> {
         cli.database_path,
         app_config.app.database_path().map(PathBuf::from),
     );
+    // Resolved once, before either surface runs: a reload reuses the same store.
+    let hermes_path = if cli.no_hermes {
+        None
+    } else {
+        crate::db::hermes::discover()
+    };
+    let pi_sessions_dir = if cli.no_pi {
+        None
+    } else {
+        crate::db::pi::discover()
+    };
     let view = app_config.view.view();
     let brand = app_config.brand.brand()?;
     let show_exit_art = brand.show_exit_art;
     let reload_every = app_config.app.reload_interval()?;
 
     if let Some(command) = cli.command {
-        return run_command(command, database_path, cli.ignore_zero, view).await;
+        return run_command(
+            command,
+            database_path,
+            hermes_path,
+            pi_sessions_dir,
+            cli.ignore_zero,
+            view,
+        )
+        .await;
     }
 
     let page = app_config.app.page()?;
     let range = app_config.app.range()?;
 
-    let input_options = InputOptions { database_path };
+    let input_options = InputOptions {
+        database_path,
+        hermes_path,
+        pi_sessions_dir,
+    };
 
     let pricing = PricingCatalog::load().wrap_err("failed to load pricing catalog")?;
     let (theme_kind, theme) =
@@ -117,6 +140,20 @@ struct CliArgs {
         help = "Treat zero stored costs as missing and estimate them"
     )]
     ignore_zero: bool,
+
+    #[arg(
+        long = "no-hermes",
+        global = true,
+        help = "Leave Hermes usage out even when its store is found"
+    )]
+    no_hermes: bool,
+
+    #[arg(
+        long = "no-pi",
+        global = true,
+        help = "Leave Pi session usage out even when its sessions directory is found"
+    )]
+    no_pi: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -193,6 +230,8 @@ enum CacheCommand {
 async fn run_command(
     command: Command,
     database_path: Option<PathBuf>,
+    hermes_path: Option<PathBuf>,
+    pi_sessions_dir: Option<PathBuf>,
     ignore_zero: bool,
     view: View,
 ) -> Result<()> {
@@ -200,7 +239,11 @@ async fn run_command(
         Command::Stats { range, format, out } => {
             // The stats surface is meant for scripts: one line on stderr naming the
             // failure, and a non-zero exit, rather than a multi-line report.
-            let data = match load_app_data(&InputOptions { database_path }) {
+            let data = match load_app_data(&InputOptions {
+                database_path,
+                hermes_path,
+                pi_sessions_dir,
+            }) {
                 Ok(data) => data,
                 Err(err) => {
                     eprintln!("error: {err}");
