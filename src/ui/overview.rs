@@ -9,6 +9,10 @@ use crate::ui::widgets::common::{metric_line_within, two_columns};
 use crate::ui::widgets::heatmap::HeatmapWidget;
 use crate::utils::formatting::{format_price_summary, format_tokens};
 
+/// The metric block stays a compact two-column card. Splitting the whole terminal leaves a
+/// canyon between the columns on a wide screen, which reads as a broken layout.
+const STATS_WIDTH: u16 = 64;
+
 /// `57/94`: active days out of the days since first use, or the bare count when the
 /// span is unknown.
 fn active_days_value(active_days: usize, span: usize) -> String {
@@ -70,6 +74,10 @@ pub fn render_overview(
     };
     frame.render_widget(Paragraph::new(header), favorite);
 
+    let stats = Rect {
+        width: stats.width.min(STATS_WIDTH),
+        ..stats
+    };
     let [left, right] = two_columns(stats);
     let (left_width, right_width) = (left.width as usize, right.width as usize);
 
@@ -172,19 +180,18 @@ pub fn render_overview(
 
 #[cfg(test)]
 mod tests {
+    use crate::analytics::heatmap_data::HeatmapData;
+    use crate::analytics::model_stats::ModelChartData;
+    use crate::analytics::{AnalyticsSnapshot, OverviewStats};
+    use crate::config::app_config::Brand;
     use crate::ui::theme::Theme;
     use crate::utils::pricing::PriceSummary;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
 
-    #[test]
-    fn the_overview_shows_both_streaks_next_to_the_active_days() {
-        use crate::analytics::heatmap_data::HeatmapData;
-        use crate::analytics::model_stats::ModelChartData;
-        use crate::analytics::{AnalyticsSnapshot, OverviewStats};
-        use crate::config::app_config::Brand;
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
-
-        let snapshot = AnalyticsSnapshot {
+    fn test_snapshot() -> AnalyticsSnapshot {
+        AnalyticsSnapshot {
             overview: OverviewStats {
                 total_tokens: 0,
                 input_tokens: 0,
@@ -220,17 +227,33 @@ mod tests {
                 weeks: Vec::new(),
                 month_labels: Vec::new(),
             },
-        };
+        }
+    }
 
+    fn draw_overview(width: u16) -> Buffer {
+        let snapshot = test_snapshot();
         let theme = Theme::builtin_dark();
-        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
         terminal
             .draw(|frame| {
                 super::render_overview(frame, frame.area(), &snapshot, &Brand::default(), &theme);
             })
             .unwrap();
+        terminal.backend().buffer().clone()
+    }
 
-        let buffer = terminal.backend().buffer().clone();
+    fn column_of(buffer: &Buffer, needle: &str) -> Option<usize> {
+        (0..buffer.area.height).find_map(|y| {
+            let row: String = (0..buffer.area.width)
+                .map(|x| buffer.cell((x, y)).map(|cell| cell.symbol()).unwrap_or(" "))
+                .collect();
+            row.find(needle)
+        })
+    }
+
+    #[test]
+    fn the_overview_shows_both_streaks_next_to_the_active_days() {
+        let buffer = draw_overview(100);
         let mut text = String::new();
         for y in 0..buffer.area.height {
             for x in 0..buffer.area.width {
@@ -242,6 +265,19 @@ mod tests {
         for expected in ["Active days: 7", "Current streak: 2", "Longest streak: 5"] {
             assert!(text.contains(expected), "missing {expected:?} in {text}");
         }
+    }
+
+    #[test]
+    fn the_metric_block_stays_compact_on_a_wide_terminal() {
+        let buffer = draw_overview(200);
+        let left = column_of(&buffer, "Total tokens:").expect("the left column is drawn");
+        let right = column_of(&buffer, "Total cost:").expect("the right column is drawn");
+
+        assert_eq!(left, 0);
+        assert!(
+            right <= 40,
+            "the right column starts at column {right}, not next to the left one"
+        );
     }
 
     #[test]
