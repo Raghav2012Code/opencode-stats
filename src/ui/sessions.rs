@@ -39,15 +39,16 @@ pub fn render_sessions(
 /// Widths of the table's columns. Each figure column is as wide as its widest value over
 /// every session, so the list keeps its shape while you scroll; the title takes what is left.
 struct SessionColumns {
+    number: usize,
     title: usize,
     cost: usize,
     tokens: usize,
     messages: usize,
 }
 
-/// Every column's width except the title: marker and gap, the number, and the gaps between
-/// columns. See [`session_row`] for the exact layout.
-const FIXED_COLUMNS: usize = 13;
+/// Every fixed column except the title and the row number: the marker, its leading space
+/// and the gaps between columns. See [`session_row`] for the exact layout.
+const FIXED_COLUMNS: usize = 10;
 const TITLE_MIN: usize = 4;
 const TITLE_MAX: usize = 30;
 
@@ -60,6 +61,8 @@ fn session_columns(rows: &[SessionUsageRow], width: usize) -> SessionColumns {
             .max()
             .unwrap_or(0)
     };
+    // Row 1000 must not push the figures one column right of their headings.
+    let number = rows.len().to_string().len().max(3);
     let cost = widest(
         rows.iter()
             .map(|row| format_price_summary(&row.cost))
@@ -77,9 +80,10 @@ fn session_columns(rows: &[SessionUsageRow], width: usize) -> SessionColumns {
         "Msgs",
     );
     let title = width
-        .saturating_sub(FIXED_COLUMNS + cost + tokens + messages)
+        .saturating_sub(FIXED_COLUMNS + number + cost + tokens + messages)
         .clamp(TITLE_MIN, TITLE_MAX);
     SessionColumns {
+        number,
         title,
         cost,
         tokens,
@@ -90,12 +94,13 @@ fn session_columns(rows: &[SessionUsageRow], width: usize) -> SessionColumns {
 /// The column names over the rows: the same layout as [`session_row`].
 fn session_header(columns: &SessionColumns) -> String {
     format!(
-        " {:>3}  {}  {:>cost$}  {:>tokens$}  {:>messages$}",
+        " {:>number$}  {}  {:>cost$}  {:>tokens$}  {:>messages$}",
         "#",
         pad_right("Title", columns.title),
         "Cost",
         "Tokens",
         "Msgs",
+        number = columns.number,
         cost = columns.cost,
         tokens = columns.tokens,
         messages = columns.messages,
@@ -105,12 +110,13 @@ fn session_header(columns: &SessionColumns) -> String {
 /// One session: the number, the title, then cost, tokens and messages.
 fn session_row(columns: &SessionColumns, number: usize, row: &SessionUsageRow) -> String {
     format!(
-        " {:>3}  {}  {:>cost$}  {:>tokens$}  {:>messages$}",
+        " {:>width$}  {}  {:>cost$}  {:>tokens$}  {:>messages$}",
         number,
         pad_right(&truncate_label(&row.title, columns.title), columns.title),
         format_price_summary(&row.cost),
         format_tokens(row.total_tokens),
         row.messages,
+        width = columns.number,
         cost = columns.cost,
         tokens = columns.tokens,
         messages = columns.messages,
@@ -404,11 +410,20 @@ mod tests {
     /// occupies one cell with the next cell empty, so the cells are the only faithful view
     /// of where things sit.
     fn sessions_cells(rows: &[SessionUsageRow], width: u16, height: u16) -> Vec<Vec<String>> {
+        sessions_cells_focused(rows, width, height, 0)
+    }
+
+    fn sessions_cells_focused(
+        rows: &[SessionUsageRow],
+        width: u16,
+        height: u16,
+        focused: usize,
+    ) -> Vec<Vec<String>> {
         let theme = Theme::builtin_dark();
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
             .draw(|frame| {
-                render_sessions(frame, frame.area(), rows, 0, None, None, &theme);
+                render_sessions(frame, frame.area(), rows, focused, None, None, &theme);
             })
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
@@ -521,6 +536,27 @@ mod tests {
             column_of(header, "Tokens") + 6,
             column_of(row, "42") + 2,
             "the Tokens figure ends under its heading:\n{}\n{}",
+            text_of(header),
+            text_of(row)
+        );
+    }
+
+    #[test]
+    fn a_four_digit_row_number_keeps_the_figures_under_their_headings() {
+        let rows = many_session_rows(1000);
+        let lines = sessions_cells_focused(&rows, 70, 16, 999);
+        let header = row_with(&lines, "Tokens");
+        let row = row_with(&lines, "row-1000");
+
+        assert!(
+            text_of(row).contains("1000"),
+            "the last row is on screen: {}",
+            text_of(row)
+        );
+        assert_eq!(
+            column_of(header, "Tokens") + 6,
+            column_of(row, "42") + 2,
+            "a four-digit number must not shift the figures:\n{}\n{}",
             text_of(header),
             text_of(row)
         );
