@@ -293,11 +293,11 @@ Once the program is running, you can quickly navigate pages and time ranges usin
 
 - `Tab` / `Left` / `Right` / `h` / `l` — Switch pages
 - `Up` / `Down` / `j` / `k` — Move focus within `Models` / `Providers` / `Sessions`
-- `r` — Cycle through the time ranges the current page offers
+- `t` — Cycle through the time ranges the current page offers
 - `1` / `2` / `3` / `4` — Pick a range by its position in the header (`Sessions` has four, `Models` and `Providers` three)
 - `Ctrl+S` or `s` — Copy the current view to the clipboard as a share card, and write it as a PNG beside your exports (`s` is there for terminals that take `Ctrl+S` as XOFF)
 - `e` — Export the current view as CSV and JSON
-- `R` — Reload the database
+- `r` / `R` — Reload the database
 - `f` / `/` — Search within the current page
 - `q` / `Esc` / `Ctrl+C` — Exit the program
 

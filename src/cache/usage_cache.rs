@@ -1,7 +1,7 @@
 //! The extracted rows of a database, kept beside the pricing cache.
 //!
 //! Reading the payload column is what startup spends its time on: hundreds of megabytes of
-//! message JSON for a large history, read on every launch and every `R`. When nothing has
+//! message JSON for a large history, read on every launch and every reload. When nothing has
 //! been written since the last read, the parsed result is the same, so the second launch
 //! reads a few megabytes instead of scanning the database again.
 //!

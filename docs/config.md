@@ -29,7 +29,7 @@ Fields:
   it opens as `7d`. The `Overview` page always shows all time and ignores this.
 - `db`: the database to read. Absent means auto-discovery.
 - `reload_every`: re-read the database on this interval. Absent means no
-  automatic reload; reload manually with `R`.
+  automatic reload; reload manually with `r` / `R`.
 
 An invalid value stops the program at startup and names the key and the values
 it accepts:

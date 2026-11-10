@@ -49,10 +49,11 @@ const TICK_TIME_MS: u16 = 200;
 /// footer is too narrow, so a hint is never cut in half.
 const FOOTER_HINTS: &[(&str, &str)] = &[
     ("tab", "pages"),
-    ("r/R", "range"),
+    ("t", "range"),
     ("f", "find"),
     ("s/^s", "share"),
     ("e", "export"),
+    ("r/R", "reload"),
     ("q", "quit"),
 ];
 /// What sits at the right end of the rule above the content.
@@ -840,14 +841,14 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => self.advance_focus(1),
             KeyCode::Up | KeyCode::Char('k') => self.advance_focus(-1),
             // The overview shows all time, so it has no range to cycle or set.
-            KeyCode::Char('r') if self.page.uses_range() => {
+            KeyCode::Char('t') if self.page.uses_range() => {
                 self.range = self.next_range();
                 self.focused_index = 0;
                 self.search = None;
                 self.recompute();
             }
-            // Lowercase 'r' cycles the time range, so live reload takes shifted 'R'.
-            KeyCode::Char('R') => self.start_reload(),
+            // Cycling lives on 't', so both cases of 'r' mean the same thing.
+            KeyCode::Char('r') | KeyCode::Char('R') => self.start_reload(),
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.should_quit = true;
             }
@@ -1419,11 +1420,11 @@ mod tests {
         let key = |code: KeyCode| KeyEvent::new(code, KeyModifiers::NONE);
 
         let mut app = app_with(Page::Overview, TimeRange::Last7Days, vec![test_event()]);
-        app.handle_key(key(KeyCode::Char('r')));
+        app.handle_key(key(KeyCode::Char('t')));
         assert_eq!(
             app.range,
             TimeRange::Last7Days,
-            "'r' is not a range toggle here"
+            "'t' is not a range toggle here"
         );
         app.handle_key(key(KeyCode::Char('3')));
         assert_eq!(
@@ -1433,11 +1434,11 @@ mod tests {
         );
 
         app.set_page(Page::Providers);
-        app.handle_key(key(KeyCode::Char('r')));
+        app.handle_key(key(KeyCode::Char('t')));
         assert_eq!(
             app.range,
             TimeRange::Last30Days,
-            "'r' skips Today on Providers"
+            "'t' skips Today on Providers"
         );
         app.handle_key(key(KeyCode::Char('2')));
         assert_eq!(
@@ -1455,7 +1456,7 @@ mod tests {
         app.set_page(Page::Sessions);
         app.handle_key(key(KeyCode::Char('2')));
         assert_eq!(app.range, TimeRange::Today, "Sessions still offers Today");
-        app.handle_key(key(KeyCode::Char('r')));
+        app.handle_key(key(KeyCode::Char('t')));
         assert_eq!(
             app.range,
             TimeRange::Last7Days,
@@ -1563,10 +1564,11 @@ mod tests {
         let wide = footer(100);
         for hint in [
             "tab pages",
-            "r/R range",
+            "t range",
             "f find",
             "s/^s share",
             "e export",
+            "r/R reload",
             "q quit",
         ] {
             assert!(wide.contains(hint), "missing {hint:?} in {wide:?}");
@@ -2246,6 +2248,13 @@ mod tests {
             frame.lines().next().unwrap_or_default().contains("Loaded"),
             "{frame}"
         );
+
+        // The range moved to 't', so lowercase 'r' is the same reload key.
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::empty()));
+        assert!(app.reload_in_flight, "lowercase r also reloads");
+        let result = app.reload_updates.try_recv().expect("a reload is queued");
+        app.finish_background_reload(result);
+        assert!(!app.reload_in_flight);
     }
 
     use crate::analytics::build_snapshot;
