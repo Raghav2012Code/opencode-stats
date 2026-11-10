@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Local};
 
+use crate::cache::usage_cache;
 use crate::db::connection::{self, discover_database_path, open_database};
 use crate::db::errors::{Error, Result};
 use crate::db::hermes;
@@ -31,7 +32,16 @@ pub fn load_app_data(options: &InputOptions) -> Result<AppData> {
             options.database_path.as_deref(),
         ))
     })?;
-    let mut data = load_from_sqlite(&db_path)?;
+    // Reading the payload column is what a launch spends its time on; with nothing written
+    // since the last read the parsed rows are the same, so reuse them instead of scanning.
+    let mut data = match usage_cache::load(&db_path) {
+        Some(data) => data,
+        None => {
+            let data = load_from_sqlite(&db_path)?;
+            usage_cache::store(&db_path, &data);
+            data
+        }
+    };
 
     if let Some(path) = options.hermes_path.as_deref() {
         merge_hermes(&mut data, path);
@@ -302,7 +312,7 @@ const PARSE_BATCH_ROWS: usize = 512;
 /// Batches in flight at once, bounding the extra memory to a few tens of megabytes.
 const PARSE_CHANNEL_BATCHES: usize = 4;
 
-fn parser_threads() -> usize {
+pub(crate) fn parser_threads() -> usize {
     std::thread::available_parallelism()
         .map(std::num::NonZeroUsize::get)
         .unwrap_or(4)
