@@ -1,0 +1,176 @@
+name: Release macOS
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    name: Universal macOS build
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Read the crate version
+        id: version
+        run: |
+          set -euo pipefail
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check the release tag matches the crate version
+        if: github.event_name == 'release'
+        run: |
+          set -euo pipefail
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [ "$tag_version" != "${{ steps.version.outputs.value }}" ]; then
+            echo "::error::release tag v$tag_version does not match crate version ${{ steps.version.outputs.value }}"
+            exit 1
+          fi
+
+      - name: Build both slices
+        run: |
+          set -euo pipefail
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+          lipo -create \
+            target/aarch64-apple-darwin/release/oc-stats \
+            target/x86_64-apple-darwin/release/oc-stats \
+            -output oc-stats
+          chmod +x oc-stats
+          lipo -info oc-stats
+          lipo -info oc-stats | grep -q "arm64"
+          lipo -info oc-stats | grep -q "x86_64"
+
+      - name: Smoke-test the binary
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.value }}"
+          ./oc-stats --version | grep -F "oc-stats $version"
+          sqlite3 fixture.db <<'SQL'
+          CREATE TABLE project (id TEXT PRIMARY KEY, name TEXT, worktree TEXT);
+          CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, title TEXT,
+              time_created INTEGER, time_updated INTEGER, time_archived INTEGER);
+          CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, data TEXT, time_created INTEGER);
+          INSERT INTO project VALUES ('proj_fixture', 'fixture', '/tmp/fixture');
+          INSERT INTO session VALUES ('ses_fixture', 'proj_fixture', NULL, 'Fixture',
+              1710000000000, 1710000001000, NULL);
+          INSERT INTO message VALUES ('msg_fixture', 'ses_fixture',
+              '{"role":"assistant","providerID":"openai","modelID":"gpt-5","tokens":{"input":100,"output":10},"time":{"created":1710000000000,"completed":1710000001000}}',
+              1710000000000);
+          SQL
+          ./oc-stats stats --db fixture.db --format line | grep -F "tokens=110"
+          if arch -x86_64 true >/dev/null 2>&1; then
+            arch -x86_64 ./oc-stats --version
+          else
+            echo "Rosetta is unavailable; the Intel slice is verified by lipo only."
+          fi
+
+      - name: Package the tarball
+        id: package
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.value }}"
+          name="oc-stats-v${version}-macos-universal.tar.gz"
+          tar -czf "$name" oc-stats README.md LICENSE
+          shasum -a 256 "$name" > "$name.sha256"
+          sha=$(shasum -a 256 "$name" | awk '{print $1}')
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Write the Homebrew formula
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.value }}"
+          sha="${{ steps.package.outputs.sha }}"
+          mkdir -p Formula
+          cat > Formula/oc-stats.rb <<RUBY
+          class OcStats < Formula
+            desc "Terminal dashboard for OpenCode usage statistics"
+            homepage "https://github.com/Raghav2012Code/opencode-stats"
+            url "https://github.com/Raghav2012Code/opencode-stats/releases/download/v${version}/oc-stats-v${version}-macos-universal.tar.gz"
+            sha256 "${sha}"
+            license "MIT"
+            version "${version}"
+
+            def install
+              bin.install "oc-stats"
+              doc.install "README.md"
+              doc.install "LICENSE"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/oc-stats --version")
+            end
+          end
+          RUBY
+          ruby -c Formula/oc-stats.rb
+
+      - name: Install and test the formula locally
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.value }}"
+          sha="${{ steps.package.outputs.sha }}"
+          # Point a copy at the tarball we just built so the formula is exercised
+          # without waiting for the release asset.
+          sed "s#url \"https://[^\"]*\"#url \"file://${PWD}/${{ steps.package.outputs.name }}\"#" \
+            Formula/oc-stats.rb > /tmp/oc-stats.rb
+          grep -F "file://" /tmp/oc-stats.rb
+          tap_dir="$(brew --repository)/Library/Taps/raghav2012code/homebrew-tap/Formula"
+          mkdir -p "$tap_dir"
+          cp /tmp/oc-stats.rb "$tap_dir/oc-stats.rb"
+          brew install Raghav2012Code/tap/oc-stats
+          brew test Raghav2012Code/tap/oc-stats
+          brew uninstall oc-stats
+
+      - name: Upload the artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-universal
+          path: |
+            oc-stats-v*-macos-universal.tar.gz
+            oc-stats-v*-macos-universal.tar.gz.sha256
+            Formula/oc-stats.rb
+          if-no-files-found: error
+
+      - name: Attach the artifacts to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            "oc-stats-v${{ steps.version.outputs.value }}-macos-universal.tar.gz" \
+            "oc-stats-v${{ steps.version.outputs.value }}-macos-universal.tar.gz.sha256" \
+            --clobber
+
+      - name: Update the Homebrew tap
+        if: github.event_name == 'release'
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.value }}"
+          if [ -z "${TAP_TOKEN}" ]; then
+            echo "::warning::TAP_GITHUB_TOKEN is not set; update the tap formula manually."
+            exit 0
+          fi
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/Raghav2012Code/homebrew-tap.git" tap
+          mkdir -p tap/Formula
+          cp Formula/oc-stats.rb tap/Formula/oc-stats.rb
+          git -C tap config user.name "github-actions[bot]"
+          git -C tap config user.email "github-actions[bot]@users.noreply.github.com"
+          git -C tap add Formula/oc-stats.rb
+          git -C tap commit -m "oc-stats ${version}" || true
+          git -C tap push

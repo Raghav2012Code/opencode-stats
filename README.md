@@ -123,6 +123,18 @@ sudo apt remove oc-stats
 
 Use the `arm64` file on ARM machines. `sudo dpkg -i` works as a fallback. The package installs the binary to `/usr/bin/oc-stats` and its documentation to `/usr/share/doc/oc-stats`; it declares only the C library as a dependency.
 
+### macOS
+
+Homebrew (recommended):
+
+```bash
+brew install Raghav2012Code/tap/oc-stats
+```
+
+Or download `oc-stats-v<version>-macos-universal.tar.gz` from the release, extract it, and put `oc-stats` on your PATH. The universal binary runs natively on Apple Silicon and Intel and requires macOS 11 or newer.
+
+The binary is not notarized. Homebrew and `curl` downloads run normally; a browser download is quarantined, so prefer `brew` or `curl`, or clear the flag with `xattr -d com.apple.quarantine /path/to/oc-stats`.
+
 ### Install upstream from crates.io
 
 ```bash
@@ -131,7 +143,7 @@ cargo install opencode-stats
 
 ### Download pre-built binaries from GitHub Releases
 
-Pre-built Windows binaries and Linux `.deb` packages are published with each release on this repository's
+Pre-built Windows binaries, Linux `.deb` packages and a macOS universal tarball are published with each release on this repository's
 [releases page](https://github.com/Raghav2012Code/opencode-stats/releases).
 Download the archive, extract it, and run `oc-stats` directly.
 
@@ -217,7 +229,7 @@ oc-stats --no-pi
 
 ### Configuration file
 
-Optional settings live in `config.toml` in the app config directory: `%APPDATA%\oc-stats\config.toml` on Windows, `~/.config/oc-stats/config.toml` on Linux and macOS. The file is never created for you; a missing file means the built-in defaults.
+Optional settings live in `config.toml` in the app config directory: `%APPDATA%\oc-stats\config.toml` on Windows, `~/.config/oc-stats/config.toml` on Linux, and `~/Library/Application Support/oc-stats/config.toml` on macOS. The file is never created for you; a missing file means the built-in defaults.
 
 ```toml
 [app]
@@ -345,7 +357,7 @@ Pi keeps one JSONL file per session under `~/.pi/agent/sessions` (`C:\Users\<you
 
 Model pricing is read from local cache first and refreshed from remote when needed:
 
-- Local cache path: `%LOCALAPPDATA%\oc-stats\models.json` on Windows, `~/.cache/oc-stats/models.json` on Linux and macOS
+- Local cache path: `%LOCALAPPDATA%\oc-stats\models.json` on Windows, `~/.cache/oc-stats/models.json` on Linux, `~/Library/Caches/oc-stats/models.json` on macOS
 - Remote source: `https://models.dev/api.json`
 - Cache TTL: 1 hour
 
