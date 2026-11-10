@@ -1,0 +1,119 @@
+name: Release .deb
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  deb:
+    name: Debian package (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Read the crate version
+        id: version
+        run: |
+          set -euo pipefail
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check the release tag matches the crate version
+        if: github.event_name == 'release'
+        run: |
+          set -euo pipefail
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [ "$tag_version" != "${{ steps.version.outputs.value }}" ]; then
+            echo "::error::release tag v$tag_version does not match crate version ${{ steps.version.outputs.value }}"
+            exit 1
+          fi
+
+      - name: Install packaging tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y cmake dpkg-dev sqlite3 lintian
+          cargo install cargo-deb --locked --version 3.8.0
+
+      - name: Build the package
+        run: cargo deb
+
+      - name: Inspect the package
+        run: |
+          set -euo pipefail
+          package=$(ls target/debian/*.deb)
+          dpkg-deb -I "$package"
+          dpkg-deb -f "$package" Architecture | grep -Fx "${{ matrix.arch }}"
+          dpkg-deb -c "$package" | grep -q "usr/bin/oc-stats"
+          dpkg-deb -c "$package" | grep -q "usr/share/doc/oc-stats/README.md"
+
+      - name: Lint the package
+        run: |
+          set -euo pipefail
+          lintian --fail-on error target/debian/*.deb
+
+      - name: Create a fixture database
+        run: |
+          set -euo pipefail
+          sqlite3 target/debian/fixture.db <<'SQL'
+          CREATE TABLE project (id TEXT PRIMARY KEY, name TEXT, worktree TEXT);
+          CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, title TEXT,
+              time_created INTEGER, time_updated INTEGER, time_archived INTEGER);
+          CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, data TEXT, time_created INTEGER);
+          INSERT INTO project VALUES ('proj_fixture', 'fixture', '/tmp/fixture');
+          INSERT INTO session VALUES ('ses_fixture', 'proj_fixture', NULL, 'Fixture',
+              1710000000000, 1710000001000, NULL);
+          INSERT INTO message VALUES ('msg_fixture', 'ses_fixture',
+              '{"role":"assistant","providerID":"openai","modelID":"gpt-5","tokens":{"input":100,"output":10},"time":{"created":1710000000000,"completed":1710000001000}}',
+              1710000000000);
+          SQL
+
+      - name: Install and smoke-test in a clean container
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -e EXPECTED="${{ steps.version.outputs.value }}" \
+            -v "$PWD/target/debian:/pkg:ro" \
+            debian:stable-slim bash -c '
+              set -euo pipefail
+              apt-get update -qq
+              apt-get install -y -qq /pkg/oc-stats_*.deb > /dev/null
+              test "$(oc-stats --version | awk "{print \$2}")" = "$EXPECTED"
+              oc-stats stats --db /pkg/fixture.db --format line | grep -F "tokens=110"
+              if ldd /usr/bin/oc-stats | grep -q "not found"; then
+                echo "missing shared libraries" >&2
+                exit 1
+              fi
+              apt-get remove -y oc-stats > /dev/null
+              test ! -e /usr/bin/oc-stats
+            '
+
+      - name: Upload the package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-${{ matrix.arch }}
+          path: target/debian/*.deb
+          if-no-files-found: error
+
+      - name: Attach the package to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" target/debian/*.deb --clobber

@@ -112,6 +112,17 @@ After installation, run:
 oc-stats
 ```
 
+### Debian and Ubuntu (.deb)
+
+Each release attaches a Debian package for `amd64` and `arm64`. Install it with apt so the dependency is resolved, and remove it the same way:
+
+```bash
+sudo apt install ./oc-stats_<version>-1_amd64.deb
+sudo apt remove oc-stats
+```
+
+Use the `arm64` file on ARM machines. `sudo dpkg -i` works as a fallback. The package installs the binary to `/usr/bin/oc-stats` and its documentation to `/usr/share/doc/oc-stats`; it declares only the C library as a dependency.
+
 ### Install upstream from crates.io
 
 ```bash
@@ -120,7 +131,7 @@ cargo install opencode-stats
 
 ### Download pre-built binaries from GitHub Releases
 
-Pre-built Windows binaries are published with each release on this repository's
+Pre-built Windows binaries and Linux `.deb` packages are published with each release on this repository's
 [releases page](https://github.com/Raghav2012Code/opencode-stats/releases).
 Download the archive, extract it, and run `oc-stats` directly.
 
