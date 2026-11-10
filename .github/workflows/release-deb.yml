@@ -1,4 +1,4 @@
-name: Release .deb
+﻿name: Release .deb
 
 on:
   release:
@@ -106,7 +106,7 @@ jobs:
             '
 
       - name: Upload the package artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: deb-${{ matrix.arch }}
           path: target/debian/*.deb
@@ -117,3 +117,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "${{ github.event.release.tag_name }}" target/debian/*.deb --clobber
+
