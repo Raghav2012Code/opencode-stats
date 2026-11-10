@@ -1,6 +1,6 @@
 [package]
 name = "opencode-stats"
-description = "A terminal dashboard for OpenCode usage statistics inspired by the /stats command in Claude Code"
+description = "Terminal dashboard for OpenCode usage statistics inspired by the /stats command in Claude Code"
 version = "1.8.5"
 edition = "2024"
 authors = ["Cateds <this.id.was.used@outlook.com>"]
@@ -58,6 +58,7 @@ name = "oc-stats"
 maintainer = "Raghav Krishna <raghavgamerz670@gmail.com>"
 copyright = "2026, Raghav Krishna"
 license-file = ["LICENSE", "0"]
+changelog = "debian/changelog"
 extended-description = """\
 A terminal dashboard for OpenCode usage statistics: tokens, costs, models, \
 providers and a 365-day activity heatmap, with optional Hermes and Pi usage \
