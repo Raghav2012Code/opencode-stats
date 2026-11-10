@@ -84,8 +84,12 @@ fn usable_database(path: PathBuf) -> Option<PathBuf> {
 }
 
 pub fn open_database(path: &Path) -> Result<Connection> {
-    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|e| Error::database_open(path, e))
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|e| Error::database_open(path, e))?;
+    // One sequential scan over the payload table: mmap stops SQLite copying every page it
+    // reads. A hint only, so a filesystem that refuses it changes nothing.
+    let _ = conn.pragma_update(None, "mmap_size", 2_147_483_648i64);
+    Ok(conn)
 }
 
 pub fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
